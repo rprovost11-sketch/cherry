@@ -1,0 +1,545 @@
+"""ReplPane: a terminal-style REPL widget backed by a single tk.Text.
+
+The full buffer is always editable, but key bindings enforce the rule that
+destructive keystrokes (BackSpace, Delete, printable characters) cannot
+modify text before the 'input_start' mark.  Cursor movement keys work
+freely throughout.  Up/Down cycle history instead of moving the cursor
+vertically.
+
+History is persisted to ~/.cherry_history across sessions.
+"""
+
+import os
+import tkinter as tk
+from tkinter import filedialog, font as tkfont
+
+from pyscheme.Utils         import paren_state
+from pyscheme.Listener      import Listener
+from cherry.parens import make_code_map, find_match
+
+PROMPT        = '>>> '
+CONT_PROMPT   = '... '
+DEBUG_PROMPT  = 'debug> '
+_HIST_FILE    = os.path.expanduser('~/.cherry_history')
+_HIST_MAX     = 500
+
+TAG_PROMPT = 'prompt'
+TAG_OUTPUT = 'output'
+TAG_RESULT = 'result'
+TAG_ERROR  = 'error'
+TAG_INPUT  = 'input'
+TAG_BANNER = 'banner'
+TAG_PAREN  = 'paren_match'
+
+
+class ReplPane(tk.Frame):
+   def __init__(self, parent, bridge, get_cwd=None, get_testdir=None,
+                get_compliancedir=None, **kwargs):
+      super().__init__(parent, **kwargs)
+      self._bridge             = bridge
+      self._get_cwd            = get_cwd or os.getcwd
+      self._get_testdir        = get_testdir
+      self._get_compliancedir  = get_compliancedir
+      self._history    = []
+      self._lines      = []
+      self._busy       = False
+      self._debug_mode = False
+
+      self._load_history()
+      self._build()
+      self._bind_keys()
+      # Banner and first prompt arrive from bridge via queue; no _show_prompt() here.
+      self.after(50, self._poll)
+
+   # ---- construction -----------------------------------------------------
+
+   def _build(self):
+      self._build_toolbar()
+      self._build_text()
+
+   def _build_toolbar(self):
+      bar = tk.Frame(self, bg='#2d2d2d', pady=3)
+      bar.pack(side=tk.TOP, fill=tk.X)
+
+      btn = dict(
+         bg='#3c3c3c', fg='#d4d4d4',
+         activebackground='#505050', activeforeground='#ffffff',
+         relief=tk.FLAT, padx=10, pady=3, cursor='hand2',
+      )
+
+      # ---- right-side permanent buttons (packed first so they anchor right) --
+      stop_cfg = dict(btn)
+      stop_cfg.update(bg='#6b1f1f', activebackground='#8b2f2f',
+                      disabledforeground='#555555', state=tk.DISABLED)
+      self._stop_btn = tk.Button(bar, text='Stop', command=self._cmd_stop, **stop_cfg)
+      self._stop_btn.pack(side=tk.RIGHT, padx=(2, 6))
+
+      tk.Button(bar, text='Clear', command=self._cmd_clear, **btn).pack(side=tk.RIGHT, padx=2)
+
+      # ---- normal-mode button group ------------------------------------------
+      self._normal_bar = tk.Frame(bar, bg='#2d2d2d')
+      self._normal_bar.pack(side=tk.LEFT, fill=tk.Y)
+
+      tk.Button(self._normal_bar, text='Reboot', command=self._cmd_reboot, **btn).pack(side=tk.LEFT, padx=(6, 2))
+      tk.Frame(self._normal_bar, width=1, bg='#555555').pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
+      tk.Button(self._normal_bar, text='Load...',       command=self._cmd_load,         **btn).pack(side=tk.LEFT, padx=2)
+      tk.Button(self._normal_bar, text='Tests...',      command=self._cmd_tests,        **btn).pack(side=tk.LEFT, padx=2)
+      tk.Button(self._normal_bar, text='Run All Tests', command=self._cmd_run_all_tests,**btn).pack(side=tk.LEFT, padx=2)
+      tk.Frame(self._normal_bar, width=1, bg='#555555').pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
+      compliance_cfg = dict(btn)
+      compliance_cfg.update(bg='#1f4e2b', activebackground='#2f6e3b')
+      tk.Button(self._normal_bar, text='R7RS Compliance',
+                command=self._cmd_compliance, **compliance_cfg).pack(side=tk.LEFT, padx=2)
+
+      # ---- debug-mode button group (hidden until debugger is active) ---------
+      self._debug_bar = tk.Frame(bar, bg='#2d2d2d')
+      # not packed yet
+
+      dbg = dict(btn)
+      tk.Button(self._debug_bar, text='Into',     command=self._cmd_dbg_into,     **dbg).pack(side=tk.LEFT, padx=(6, 2))
+      tk.Button(self._debug_bar, text='Over',     command=self._cmd_dbg_over,     **dbg).pack(side=tk.LEFT, padx=2)
+      tk.Button(self._debug_bar, text='Out',      command=self._cmd_dbg_out,      **dbg).pack(side=tk.LEFT, padx=2)
+      tk.Button(self._debug_bar, text='Continue', command=self._cmd_dbg_continue, **dbg).pack(side=tk.LEFT, padx=2)
+      tk.Frame(self._debug_bar, width=1, bg='#555555').pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
+      abort_cfg = dict(btn)
+      abort_cfg.update(bg='#6b1f1f', activebackground='#8b2f2f')
+      tk.Button(self._debug_bar, text='Abort', command=self._cmd_dbg_abort, **abort_cfg).pack(side=tk.LEFT, padx=2)
+
+   def _build_text(self):
+      mono = tkfont.Font(family='Courier New', size=10)
+      frame = tk.Frame(self)
+      frame.pack(fill=tk.BOTH, expand=True)
+
+      self._text = tk.Text(
+         frame,
+         font=mono,
+         wrap=tk.WORD,
+         undo=False,
+         bg='#1e1e1e',
+         fg='#d4d4d4',
+         insertbackground='#d4d4d4',
+         selectbackground='#264f78',
+         relief=tk.FLAT,
+         padx=6,
+         pady=6,
+      )
+      sb = tk.Scrollbar(frame, command=self._text.yview)
+      self._text.configure(yscrollcommand=sb.set)
+      sb.pack(side=tk.RIGHT, fill=tk.Y)
+      self._text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+      self._text.tag_configure(TAG_PROMPT, foreground='#569cd6')
+      self._text.tag_configure(TAG_OUTPUT, foreground='#d4d4d4')
+      self._text.tag_configure(TAG_RESULT, foreground='#4ec9b0')
+      self._text.tag_configure(TAG_ERROR,  foreground='#f44747')
+      self._text.tag_configure(TAG_INPUT,  foreground='#d4d4d4')
+      self._text.tag_configure(TAG_BANNER, foreground='#888888',
+                                font=tkfont.Font(family='Courier New', size=10))
+      self._text.tag_configure(TAG_PAREN,  background='#3c3c00')
+
+   def _bind_keys(self):
+      t = self._text
+      t.bind('<Return>',      self._on_return)
+      t.bind('<BackSpace>',   self._on_backspace)
+      t.bind('<KeyRelease>',  self._on_paren_check)
+      t.bind('<ButtonRelease-1>', self._on_paren_check)
+      t.bind('<Delete>',    self._on_delete)
+      t.bind('<Home>',      self._on_home)
+      t.bind('<Key>',       self._on_key)
+      t.bind('<<Paste>>',   self._on_paste)
+
+   # ---- persistent history -----------------------------------------------
+
+   def _load_history(self):
+      try:
+         with open(_HIST_FILE, 'r', encoding='utf-8') as f:
+            raw = f.read()
+         entries = raw.split('\x00')
+         self._history = [e for e in entries if e.strip()]
+      except FileNotFoundError:
+         pass
+
+   def save_history(self):
+      tail = self._history[-_HIST_MAX:]
+      try:
+         with open(_HIST_FILE, 'w', encoding='utf-8') as f:
+            f.write('\x00'.join(tail))
+      except OSError:
+         pass
+
+   # ---- prompt / output --------------------------------------------------
+
+   def _show_prompt(self):
+      if self._lines:
+         p      = CONT_PROMPT
+         indent = Listener._compute_indent(self._lines)
+      elif self._debug_mode:
+         p      = DEBUG_PROMPT
+         indent = ''
+      else:
+         p      = PROMPT
+         indent = ''
+      self._append(p, TAG_PROMPT)
+      self._text.mark_set('input_start', 'end-1c')
+      self._text.mark_gravity('input_start', tk.LEFT)
+      if indent:
+         self._append(indent, TAG_INPUT)
+      self._text.see(tk.END)
+
+   def _append(self, text, tag=None):
+      self._text.insert(tk.END, text, (tag,) if tag else ())
+      self._text.see(tk.END)
+
+   # ---- busy state -------------------------------------------------------
+
+   def _set_busy(self, busy):
+      self._busy = busy
+      state = tk.NORMAL if busy else tk.DISABLED
+      self._stop_btn.configure(state=state)
+
+   # ---- queue polling ----------------------------------------------------
+
+   def _poll(self):
+      try:
+         while True:
+            msg  = self._bridge.result_queue.get_nowait()
+            kind = msg[0]
+            if kind == 'banner':
+               self._append(msg[1], TAG_BANNER)
+            elif kind == 'output':
+               self._append(msg[1], TAG_OUTPUT)
+            elif kind == 'result':
+               self._append('==> ' + msg[1] + '\n', TAG_RESULT)
+            elif kind == 'error':
+               for line in msg[1].splitlines():
+                  self._append('%%% ' + line + '\n', TAG_ERROR)
+            elif kind == 'ready':
+               debug = (len(msg) > 1 and msg[1].strip() == 'debug>')
+               if debug != self._debug_mode:
+                  self._debug_mode = debug
+                  self._swap_toolbar()
+               self._set_busy(False)
+               self._append('\n', TAG_OUTPUT)
+               self._show_prompt()
+      except Exception:
+         pass
+      self.after(50, self._poll)
+
+   # ---- toolbar commands -------------------------------------------------
+
+   def _cmd_reboot(self):
+      parent = self.winfo_toplevel()
+      dlg = tk.Toplevel(parent)
+      dlg.title('Reboot interpreter')
+      dlg.resizable(False, False)
+      dlg.configure(bg='#2d2d2d')
+      dlg.transient(parent)
+
+      tk.Label(dlg,
+               text='Reboot the interpreter?\nAll current bindings will be lost.',
+               bg='#2d2d2d', fg='#d4d4d4',
+               padx=24, pady=16, justify=tk.LEFT).pack()
+
+      btn_row = tk.Frame(dlg, bg='#2d2d2d')
+      btn_row.pack(pady=(0, 14))
+
+      confirmed = [False]
+
+      def _do_reboot():
+         confirmed[0] = True
+         dlg.destroy()
+
+      tk.Button(btn_row, text='Reboot', command=_do_reboot,
+                bg='#6b1f1f', fg='#d4d4d4',
+                activebackground='#8b2f2f', activeforeground='#ffffff',
+                relief=tk.FLAT, padx=14, pady=4, cursor='hand2',
+                ).pack(side=tk.LEFT, padx=6)
+      tk.Button(btn_row, text='Cancel', command=dlg.destroy,
+                bg='#3c3c3c', fg='#d4d4d4',
+                activebackground='#505050', activeforeground='#ffffff',
+                relief=tk.FLAT, padx=14, pady=4, cursor='hand2',
+                ).pack(side=tk.LEFT, padx=6)
+
+      dlg.update_idletasks()
+      w  = dlg.winfo_width()
+      h  = dlg.winfo_height()
+      x  = parent.winfo_x() + (parent.winfo_width()  - w) // 2
+      y  = parent.winfo_y() + (parent.winfo_height() - h) // 2
+      dlg.geometry('+' + str(x) + '+' + str(y))
+      dlg.grab_set()
+      dlg.wait_window()
+
+      if confirmed[0]:
+         self._lines      = []
+         if self._debug_mode:
+            self._debug_mode = False
+            self._swap_toolbar()
+         self._set_busy(False)
+         self._bridge.reboot()
+
+   def _cmd_stop(self):
+      self._bridge.stop()
+
+   def _cmd_clear(self):
+      self._text.delete('1.0', tk.END)
+      self._lines = []
+      self._show_prompt()
+
+   def _swap_toolbar(self):
+      if self._debug_mode:
+         self._normal_bar.pack_forget()
+         self._debug_bar.pack(side=tk.LEFT, fill=tk.Y)
+      else:
+         self._debug_bar.pack_forget()
+         self._normal_bar.pack(side=tk.LEFT, fill=tk.Y)
+
+   def _cmd_dbg_into(self):
+      self._send_debug_cmd('s')
+
+   def _cmd_dbg_over(self):
+      self._send_debug_cmd('n')
+
+   def _cmd_dbg_out(self):
+      self._send_debug_cmd('o')
+
+   def _cmd_dbg_continue(self):
+      self._send_debug_cmd('c')
+
+   def _cmd_dbg_abort(self):
+      self._send_debug_cmd('q')
+
+   def _send_debug_cmd(self, cmd):
+      if self._busy:
+         return
+      self._append(cmd + '\n', TAG_INPUT)
+      self._set_busy(True)
+      self._bridge.submit(cmd)
+
+   def _cmd_load(self):
+      path = filedialog.askopenfilename(
+         title='Load Scheme file into interpreter',
+         filetypes=[('Scheme files', '*.scm *.ss *.rkt'), ('All files', '*.*')],
+      )
+      if not path:
+         return
+      self._lines = []
+      label = '(load "' + os.path.basename(path) + '")'
+      self._text.delete('input_start', 'end-1c')
+      self._append(label + '\n', TAG_INPUT)
+      self._set_busy(True)
+      self._bridge.submit_file(path)
+
+   def _cmd_tests(self):
+      path = filedialog.askopenfilename(
+         title='Run test log',
+         initialdir='testing',
+         filetypes=[('Test logs', '*.log'), ('All files', '*.*')],
+      )
+      if path:
+         self.inject_source(']test ' + path)
+
+   def _cmd_run_all_tests(self):
+      testdir = self._get_testdir() if self._get_testdir else None
+      if testdir:
+         self.inject_source(']test ' + testdir)
+      else:
+         self.inject_source(']test')
+
+   def _cmd_compliance(self):
+      compliancedir = self._get_compliancedir() if self._get_compliancedir else None
+      if compliancedir:
+         self.inject_source(']compliance ' + compliancedir)
+      else:
+         self.inject_source(']compliance')
+
+   # ---- key handlers -----------------------------------------------------
+
+   def _before_input_start(self):
+      return self._text.compare(tk.INSERT, '<', 'input_start')
+
+   def _on_key(self, event):
+      if self._busy:
+         return 'break'
+      ch = event.char
+      if not ch or event.keysym in (
+            'Return', 'Up', 'Down', 'BackSpace', 'Delete',
+            'Home', 'End', 'Left', 'Right', 'Prior', 'Next',
+            'Control_L', 'Control_R', 'Alt_L', 'Alt_R',
+            'Shift_L', 'Shift_R', 'Escape', 'Tab',
+            'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12',
+         ):
+         return
+      if event.state & 0x4:   # Ctrl held - allow copy/paste shortcuts
+         return
+      if self._before_input_start():
+         self._text.mark_set(tk.INSERT, tk.END)
+      return
+
+   def _on_backspace(self, event):
+      if self._busy:
+         return 'break'
+      if self._before_input_start():
+         return 'break'
+      if self._text.compare(tk.INSERT, '<=', 'input_start'):
+         return 'break'
+      return
+
+   def _on_delete(self, event):
+      if self._busy:
+         return 'break'
+      if self._before_input_start():
+         return 'break'
+      return
+
+   def _on_home(self, event):
+      self._text.mark_set(tk.INSERT, 'input_start')
+      return 'break'
+
+   def _on_paste(self, event):
+      if self._busy:
+         return 'break'
+      if self._before_input_start():
+         self._text.mark_set(tk.INSERT, tk.END)
+      return
+
+   def _on_return(self, event):
+      if self._busy:
+         return 'break'
+
+      # Cursor above input_start: copy that expression to the prompt for editing
+      if self._before_input_start():
+         expr = self._extract_expr_at_cursor()
+         if expr:
+            self._replace_input(expr)
+         return 'break'
+
+      line = self._text.get('input_start', 'end-1c')
+
+      # Super-bracket: trailing ']' closes all open parens
+      if line.endswith(']'):
+         tentative    = line[:-1]
+         combined_try = '\n'.join(self._lines + [tentative])
+         ps_try       = paren_state(combined_try)
+         innermost_bracket = (len(ps_try.stack) > 0
+                              and ps_try.stack[len(ps_try.stack) - 1] == '[')
+         if ps_try.depth > 0 and not ps_try.in_string and not innermost_bracket:
+            line = tentative + ')' * ps_try.depth
+            self._text.delete('input_start', 'end-1c')
+            self._text.insert('input_start', line, (TAG_INPUT,))
+
+      self._append('\n', TAG_INPUT)
+      self._lines.append(line)
+      combined = '\n'.join(self._lines)
+      ps = paren_state(combined)
+
+      if ps.depth > 0 or ps.in_string:
+         self._show_prompt()
+         return 'break'
+
+      source = combined.strip()
+      self._lines = []
+      if source:
+         self._history.append(source)
+         self._set_busy(True)
+         self._bridge.submit(source)
+      else:
+         self._show_prompt()
+      return 'break'
+
+   def _on_paren_check(self, event=None):
+      self._highlight_matching_paren()
+
+   def _highlight_matching_paren(self):
+      t = self._text
+      t.tag_remove(TAG_PAREN, '1.0', tk.END)
+
+      before = t.get('insert-1c', 'insert')
+      at     = t.get('insert',    'insert+1c')
+      if before in '()[]':
+         paren_tk = 'insert-1c'
+      elif at in '()[]':
+         paren_tk = 'insert'
+      else:
+         return
+
+      full = t.get('1.0', tk.END)
+      pos  = len(t.get('1.0', paren_tk))
+      if pos < 0 or pos >= len(full):
+         return
+
+      code  = make_code_map(full)
+      match = find_match(full, code, pos)
+      if match < 0:
+         return
+
+      t.tag_add(TAG_PAREN, paren_tk, paren_tk + '+1c')
+      match_tk = '1.0+' + str(match) + 'c'
+      t.tag_add(TAG_PAREN, match_tk, match_tk + '+1c')
+
+   def _extract_expr_at_cursor(self):
+      """Return the full expression block the cursor is sitting on,
+      with prompt prefixes stripped.  Returns '' if the cursor is not
+      on an expression line (e.g. output, result, or error line)."""
+      cursor_line = int(self._text.index(tk.INSERT).split('.')[0])
+
+      # Walk backwards to the >>> line that opens this block
+      ln = cursor_line
+      while ln >= 1:
+         content = self._text.get(str(ln) + '.0', str(ln) + '.end')
+         if content.startswith(PROMPT):
+            break
+         if content.startswith(CONT_PROMPT):
+            ln -= 1
+            continue
+         return ''   # cursor is on a non-expression line
+      if ln < 1:
+         return ''
+
+      # Collect the >>> line and any following ... lines
+      lines = []
+      total = int(self._text.index(tk.END).split('.')[0])
+      i = ln
+      while i <= total:
+         content = self._text.get(str(i) + '.0', str(i) + '.end')
+         if i == ln:
+            lines.append(content[len(PROMPT):])
+         elif content.startswith(CONT_PROMPT):
+            lines.append(content[len(CONT_PROMPT):])
+         else:
+            break
+         i += 1
+
+      return '\n'.join(lines)
+
+   def _replace_input(self, text):
+      self._text.delete('input_start', 'end-1c')
+      self._text.insert('input_start', text, (TAG_INPUT,))
+      self._text.mark_set(tk.INSERT, tk.END)
+      self._text.see(tk.END)
+
+   # ---- public helpers ---------------------------------------------------
+
+   def set_bridge(self, bridge):
+      """Replace the underlying bridge (called when switching interpreters)."""
+      self._bridge = bridge
+      self._lines = []
+      if self._debug_mode:
+         self._debug_mode = False
+         self._swap_toolbar()
+      self._set_busy(False)
+      self._text.delete('1.0', tk.END)
+
+   def inject_source(self, source):
+      """Submit source as if typed at the prompt (called by editor Run button)."""
+      if self._busy:
+         return
+      self._lines = []
+      self._text.delete('input_start', 'end-1c')
+      self._text.insert('input_start', source, (TAG_INPUT,))
+      self._append('\n', TAG_INPUT)
+      if source.strip():
+         self._history.append(source)
+         self._set_busy(True)
+         self._bridge.submit(source)
+      else:
+         self._show_prompt()
