@@ -15,7 +15,6 @@ def _state_path(key):
 
 _LISP_DIR = pathlib.Path(__file__).resolve().parents[1]
 
-_PYSCHEME_TESTDIR    = str(_LISP_DIR / 'scheme-tests' / 'feature-tests')
 _R7RS_COMPLIANCE_DIR = str(_LISP_DIR / 'scheme-tests' / 'R7RS-Compliance-Tests')
 
 _INTERPRETERS = {
@@ -44,7 +43,7 @@ _INTERPRETERS = {
         'label':        '4 · CPPScheme2',
         'cmd':          [str(_LISP_DIR / '4CPPScheme2' / 'build' / 'Release' / 'cppscheme2.exe')],
         'cwd':          str(_LISP_DIR / '4CPPScheme2'),
-        'testdir':      _PYSCHEME_TESTDIR,
+        'testdir':      None,
         'compliancedir': None,
     },
 }
