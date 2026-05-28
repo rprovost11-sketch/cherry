@@ -15,8 +15,8 @@ def _state_path(key):
 
 _LISP_DIR = pathlib.Path(__file__).resolve().parents[1]
 
-_PYSCHEME_TESTDIR    = str(_LISP_DIR / '3PyScheme' / 'feature-tests')
-_R7RS_COMPLIANCE_DIR = str(_LISP_DIR / 'R7RS-Compliance-Tests')
+_PYSCHEME_TESTDIR    = str(_LISP_DIR / 'scheme-tests' / 'feature-tests')
+_R7RS_COMPLIANCE_DIR = str(_LISP_DIR / 'scheme-tests' / 'R7RS-Compliance-Tests')
 
 _INTERPRETERS = {
     '1': {
@@ -37,7 +37,7 @@ _INTERPRETERS = {
         'label':        '3 · PyScheme',
         'cmd':          [sys.executable, '-u', '-m', 'pyscheme'],
         'cwd':          str(_LISP_DIR / '3PyScheme'),
-        'testdir':      None,   # PyScheme uses its own internal testdir (feature-testing/)
+        'testdir':      None,   # PyScheme derives testdir internally from scheme-tests/
         'compliancedir': _R7RS_COMPLIANCE_DIR,
     },
     '4': {
