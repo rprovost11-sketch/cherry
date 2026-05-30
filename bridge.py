@@ -198,11 +198,13 @@ class InProcessBridge:
 
       runFile     = None
       runFilename = ''
-      runsDir = os.path.join(os.path.abspath(compliancedir), 'runs')
+      # Run reports go to the shared scheme-tests/runs/ (parent of the
+      # compliance dir), never to a runs/ under R7RS-Compliance-Tests.
+      runsDir = os.path.join(os.path.dirname(os.path.abspath(compliancedir)), 'runs')
       try:
          os.makedirs(runsDir, exist_ok=True)
          timestamp   = datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')
-         runFilename = os.path.join(runsDir, timestamp + '-pyscheme.run')
+         runFilename = os.path.join(runsDir, timestamp + '-compliance-PyScheme.run')
          runFile     = open(runFilename, 'w', encoding='utf-8')
       except OSError:
          runFile     = None
@@ -248,11 +250,13 @@ class InProcessBridge:
 
       # Grand-total status to GUI.
       total = grand_pass + grand_fail
+      nfiles = len(filenames)
       if grand_fail == 0:
-         summary = '\n--- all ' + str(total) + ' test cases passed ---\n'
+         summary = ('\n--- all ' + str(total) + ' test cases passed across '
+                    + str(nfiles) + ' files ---\n')
       else:
          summary = ('\n--- ' + str(grand_fail) + ' of ' + str(total)
-                    + ' tests failed ---\n')
+                    + ' tests failed across ' + str(nfiles) + ' files ---\n')
       self.result_queue.put(('output', summary))
 
       # Write Test Report tail to run file.

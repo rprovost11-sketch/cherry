@@ -48,7 +48,7 @@ _INTERPRETERS = {
     },
 }
 
-_DEFAULT_INTERP = '3'
+_DEFAULT_INTERP = '4'
 
 from cherry.subprocess_bridge import SubprocessBridge
 from cherry.editor_pane       import EditorPane
@@ -61,7 +61,7 @@ class CherryApp(tk.Tk):
       self._current_interp = _DEFAULT_INTERP
       cfg = _INTERPRETERS[_DEFAULT_INTERP]
       self.title('cherry - ' + cfg['label'])
-      self.geometry('900x700')
+      self.geometry('675x700')
       self.configure(bg='#1e1e1e')
 
       _CHERRY_DIR.mkdir(exist_ok=True)

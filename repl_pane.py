@@ -90,6 +90,10 @@ class ReplPane(tk.Frame):
       compliance_cfg.update(bg='#1f4e2b', activebackground='#2f6e3b')
       tk.Button(self._normal_bar, text='R7RS Compliance',
                 command=self._cmd_compliance, **compliance_cfg).pack(side=tk.LEFT, padx=2)
+      regression_cfg = dict(btn)
+      regression_cfg.update(bg='#1f3a4e', activebackground='#2f5a6e')
+      tk.Button(self._normal_bar, text='Regressions',
+                command=self._cmd_regression, **regression_cfg).pack(side=tk.LEFT, padx=2)
 
       # ---- debug-mode button group (hidden until debugger is active) ---------
       self._debug_bar = tk.Frame(bar, bg='#2d2d2d')
@@ -351,6 +355,11 @@ class ReplPane(tk.Frame):
          self.inject_source(']compliance ' + compliancedir)
       else:
          self.inject_source(']compliance')
+
+   def _cmd_regression(self):
+      # Bare ]regression runs the interpreter's own auto-derived regression
+      # suite (works for every interpreter regardless of cwd).
+      self.inject_source(']regression')
 
    # ---- key handlers -----------------------------------------------------
 
