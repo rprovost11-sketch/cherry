@@ -497,6 +497,20 @@ class ReplPane(tk.Frame):
    _SUITE_ORDER = ('Feature', 'Compliance (quick)',
                    'Compliance (slow)', 'Regressions')
 
+   def _slow_compliance_applicable(self):
+      # 'Compliance (slow)' is a high-N memory soak whose real payoff is
+      # stressing cppscheme2's custom generational GC.  pyScheme (and the older
+      # interpreters) have no custom GC -- and bounded-space TCO is already
+      # proven at small N by 3.05's %continuation-depth checks, which run in the
+      # quick suite too -- so the slow run only makes sense for cppscheme2.
+      if not self._get_interp_cmd:
+         return False
+      try:
+         cmd = self._get_interp_cmd() or []
+      except Exception:
+         return False
+      return any('cppscheme2' in str(p).lower() for p in cmd)
+
    def _cmd_test_suites(self):
       if self._running_suites:
          return
@@ -523,22 +537,29 @@ class ReplPane(tk.Frame):
             saved = {}
       if not isinstance(saved, dict):
          saved = {}
+      # 'Compliance (slow)' only makes sense for cppscheme2; disable it
+      # (forced unchecked) for the other interpreters.
+      slow_ok = self._slow_compliance_applicable()
       checks = {}
       box = tk.Frame(dlg, bg='#2d2d2d')
       box.pack(fill=tk.X, padx=28)
       for name in ReplPane._SUITE_ORDER:
-         v = tk.BooleanVar(value=bool(saved.get(name, defaults[name])))
+         enabled = not (name == 'Compliance (slow)' and not slow_ok)
+         init = bool(saved.get(name, defaults[name])) if enabled else False
+         v = tk.BooleanVar(value=init)
          checks[name] = v
          tk.Checkbutton(box, text=name, variable=v,
                         bg='#2d2d2d', fg='#d4d4d4',
                         activebackground='#2d2d2d', activeforeground='#ffffff',
                         selectcolor='#1e1e1e', highlightthickness=0,
+                        disabledforeground='#666666',
+                        state=(tk.NORMAL if enabled else tk.DISABLED),
                         anchor=tk.W, padx=4, cursor='hand2').pack(fill=tk.X, anchor=tk.W)
 
       tk.Label(dlg,
                text="'Compliance (quick)' runs -I:100k.  'Compliance (slow)'\n"
-                    "calibrates this machine's TCO overflow threshold (slow,\n"
-                    'memory-heavy) then runs full compliance above it.',
+                    "calibrates this machine's TCO overflow threshold then soaks\n"
+                    'above it -- a GC stress run, for cppscheme2 only.',
                bg='#2d2d2d', fg='#888888', padx=24,
                anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(8, 6))
 
@@ -547,10 +568,17 @@ class ReplPane(tk.Frame):
 
       def _do_run():
          selected = [n for n in ReplPane._SUITE_ORDER if checks[n].get()]
-         # Persist the current configuration on Run only (Cancel has no effect).
+         # Persist on Run only (Cancel has no effect).  When 'Compliance (slow)'
+         # is disabled (non-cppscheme2), keep its previously-saved value rather
+         # than clobbering it, so a cppscheme2 preference survives a detour.
          if self._save_suite_selection:
-            self._save_suite_selection(
-               {n: bool(checks[n].get()) for n in ReplPane._SUITE_ORDER})
+            config = {}
+            for n in ReplPane._SUITE_ORDER:
+               if n == 'Compliance (slow)' and not slow_ok:
+                  config[n] = bool(saved.get(n, defaults[n]))
+               else:
+                  config[n] = bool(checks[n].get())
+            self._save_suite_selection(config)
          dlg.destroy()
          if selected:
             self._run_suite_sequence(selected)
