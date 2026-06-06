@@ -173,6 +173,10 @@ class CherryApp(tk.Tk):
                               get_cwd=lambda: self._cwd_var.get(),
                               get_testdir=lambda: _INTERPRETERS[self._current_interp].get('testdir'),
                               get_compliancedir=lambda: _INTERPRETERS[self._current_interp].get('compliancedir'),
+                              get_interp_cmd=lambda: _INTERPRETERS[self._current_interp]['cmd'],
+                              calibrate_script=str(_LISP_DIR / '4CPPScheme2' / 'bench' / 'calibrate_tco.ps1'),
+                              get_suite_selection=lambda: self._settings.get('suite_selection', {}),
+                              save_suite_selection=self._save_suite_selection,
                               bg='#1e1e1e')
 
       paned.add(self._editor, stretch='always')
@@ -254,6 +258,11 @@ class CherryApp(tk.Tk):
       on = self._dev_mode_var.get()
       self._repl.set_test_tools_visible(on)
       self._settings['developer_mode'] = on
+      _save_settings(self._settings)
+
+   def _save_suite_selection(self, config):
+      # Persist the Test Suites... checkbox configuration (saved on Run).
+      self._settings['suite_selection'] = config
       _save_settings(self._settings)
 
    def _cmd_chdir(self):

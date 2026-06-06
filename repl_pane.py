@@ -11,6 +11,8 @@ History is persisted to ~/.cherry_history across sessions.
 
 import os
 import re
+import subprocess
+import threading
 import tkinter as tk
 from tkinter import filedialog, font as tkfont
 
@@ -107,17 +109,27 @@ def _parse_ansi(text, base_tag):
 
 class ReplPane(tk.Frame):
    def __init__(self, parent, bridge, get_cwd=None, get_testdir=None,
-                get_compliancedir=None, **kwargs):
+                get_compliancedir=None, get_interp_cmd=None,
+                calibrate_script=None, get_suite_selection=None,
+                save_suite_selection=None, **kwargs):
       super().__init__(parent, **kwargs)
       self._bridge             = bridge
       self._get_cwd            = get_cwd or os.getcwd
       self._get_testdir        = get_testdir
       self._get_compliancedir  = get_compliancedir
+      self._get_interp_cmd     = get_interp_cmd      # () -> current interpreter cmd list
+      self._calibrate_script   = calibrate_script    # path to calibrate_tco.ps1
+      self._get_suite_selection  = get_suite_selection   # () -> {name: bool}
+      self._save_suite_selection = save_suite_selection  # (dict) -> persist
       self._history    = []
       self._lines      = []
       self._busy       = False
       self._debug_mode = False
       self._show_test_tools = True   # set False (or via set_test_tools_visible) for a release build
+      # Test Suites... sequencer: a queue of zero-arg step callables run one at
+      # a time, each advanced by the next 'ready' from the interpreter.
+      self._suite_queue    = []
+      self._running_suites = False
 
       self._load_history()
       self._build()
@@ -157,26 +169,17 @@ class ReplPane(tk.Frame):
       tk.Button(bar, text='Clear', command=self._cmd_clear, **btn).pack(side=tk.LEFT, padx=(6, 2))
       tk.Frame(bar, width=1, bg='#555555').pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
 
-      # ---- test-suite group: one contiguous frame so it can be hidden as a
-      #      unit -- swapped out in debug mode, and easy to drop in a release
-      #      build (see set_test_tools_visible).
-      # Order:  Test...  Feature  Compliance  Regressions
+      # ---- test group: one contiguous frame so it can be hidden as a unit --
+      #      swapped out in debug mode, and easy to drop in a release build
+      #      (see set_test_tools_visible).  Two buttons:  Test...  Test Suites...
       self._test_bar = tk.Frame(bar, bg='#2d2d2d')
       self._test_bar.pack(side=tk.LEFT, fill=tk.Y)
 
       tk.Button(self._test_bar, text='Test...', command=self._cmd_tests, **btn).pack(side=tk.LEFT, padx=2)
-      feature_cfg = dict(btn)
-      feature_cfg.update(bg='#3a1f4e', activebackground='#5a2f6e')
-      tk.Button(self._test_bar, text='Feature',
-                command=self._cmd_feature, **feature_cfg).pack(side=tk.LEFT, padx=2)
-      compliance_cfg = dict(btn)
-      compliance_cfg.update(bg='#1f4e2b', activebackground='#2f6e3b')
-      tk.Button(self._test_bar, text='Compliance',
-                command=self._cmd_compliance, **compliance_cfg).pack(side=tk.LEFT, padx=2)
-      regression_cfg = dict(btn)
-      regression_cfg.update(bg='#1f3a4e', activebackground='#2f5a6e')
-      tk.Button(self._test_bar, text='Regressions',
-                command=self._cmd_regression, **regression_cfg).pack(side=tk.LEFT, padx=2)
+      suites_cfg = dict(btn)
+      suites_cfg.update(bg='#1f4e2b', activebackground='#2f6e3b')
+      tk.Button(self._test_bar, text='Test Suites...',
+                command=self._cmd_test_suites, **suites_cfg).pack(side=tk.LEFT, padx=2)
 
       # ---- debug-mode button group (hidden until debugger is active) ---------
       self._debug_bar = tk.Frame(bar, bg='#2d2d2d')
@@ -325,10 +328,21 @@ class ReplPane(tk.Frame):
                self._set_busy(False)
                self._append('\n', TAG_OUTPUT)
                self._show_prompt()
+               # Advance a Test Suites... sequence: the step just finished, so
+               # start the next one (or finish if the queue is empty).
+               if self._running_suites:
+                  self._advance_suite_queue()
             elif kind == 'exited':
                # The interpreter died (e.g. (exit)/]quit, or a crash).  Respawn
                # silently -- the fresh interpreter's boot banner is the signal.
                self._lines = []
+               # A crash mid-sequence (e.g. the slow compliance run overflowing
+               # on a TCO regression) aborts the remaining suites.
+               if self._running_suites:
+                  self._running_suites = False
+                  self._suite_queue = []
+                  self._append('; interpreter exited during a suite run; '
+                               'sequence aborted.\n', TAG_ERROR)
                if self._debug_mode:
                   self._debug_mode = False
                   self._swap_toolbar()
@@ -398,6 +412,13 @@ class ReplPane(tk.Frame):
          self._bridge.reboot()
 
    def _cmd_stop(self):
+      # Stop aborts a running Test Suites... sequence as well as interrupting
+      # the current evaluation.  (A calibration subprocess, if mid-run, is not
+      # killed here; clearing the flag stops the sequence from continuing.)
+      if self._running_suites:
+         self._running_suites = False
+         self._suite_queue = []
+         self._append('\n; suite sequence aborted.\n', TAG_ERROR)
       self._bridge.stop()
 
    def _cmd_clear(self):
@@ -471,24 +492,215 @@ class ReplPane(tk.Frame):
       if path:
          self.inject_source(']feature ' + path)
 
-   def _cmd_feature(self):
+   # ---- Test Suites... dialog + sequencer --------------------------------
+
+   _SUITE_ORDER = ('Feature', 'Compliance (quick)',
+                   'Compliance (slow)', 'Regressions')
+
+   def _cmd_test_suites(self):
+      if self._running_suites:
+         return
+      parent = self.winfo_toplevel()
+      dlg = tk.Toplevel(parent)
+      dlg.title('Run test suites')
+      dlg.resizable(False, False)
+      dlg.configure(bg='#2d2d2d')
+      dlg.transient(parent)
+
+      tk.Label(dlg, text='Run these suites in order:',
+               bg='#2d2d2d', fg='#d4d4d4', padx=24,
+               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(16, 8))
+
+      defaults = {'Feature': True, 'Compliance (quick)': True,
+                  'Compliance (slow)': False, 'Regressions': True}
+      # Restore the last-saved checkbox configuration (saved on Run); fall back
+      # to defaults for any suite not present in the saved selection.
+      saved = {}
+      if self._get_suite_selection:
+         try:
+            saved = self._get_suite_selection() or {}
+         except Exception:
+            saved = {}
+      if not isinstance(saved, dict):
+         saved = {}
+      checks = {}
+      box = tk.Frame(dlg, bg='#2d2d2d')
+      box.pack(fill=tk.X, padx=28)
+      for name in ReplPane._SUITE_ORDER:
+         v = tk.BooleanVar(value=bool(saved.get(name, defaults[name])))
+         checks[name] = v
+         tk.Checkbutton(box, text=name, variable=v,
+                        bg='#2d2d2d', fg='#d4d4d4',
+                        activebackground='#2d2d2d', activeforeground='#ffffff',
+                        selectcolor='#1e1e1e', highlightthickness=0,
+                        anchor=tk.W, padx=4, cursor='hand2').pack(fill=tk.X, anchor=tk.W)
+
+      tk.Label(dlg,
+               text="'Compliance (quick)' runs -I:100k.  'Compliance (slow)'\n"
+                    "calibrates this machine's TCO overflow threshold (slow,\n"
+                    'memory-heavy) then runs full compliance above it.',
+               bg='#2d2d2d', fg='#888888', padx=24,
+               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(8, 6))
+
+      btn_row = tk.Frame(dlg, bg='#2d2d2d')
+      btn_row.pack(pady=(4, 14))
+
+      def _do_run():
+         selected = [n for n in ReplPane._SUITE_ORDER if checks[n].get()]
+         # Persist the current configuration on Run only (Cancel has no effect).
+         if self._save_suite_selection:
+            self._save_suite_selection(
+               {n: bool(checks[n].get()) for n in ReplPane._SUITE_ORDER})
+         dlg.destroy()
+         if selected:
+            self._run_suite_sequence(selected)
+
+      tk.Button(btn_row, text='Run', command=_do_run,
+                bg='#1f4e6b', fg='#d4d4d4',
+                activebackground='#2f6e8b', activeforeground='#ffffff',
+                relief=tk.FLAT, padx=14, pady=4, cursor='hand2',
+                ).pack(side=tk.LEFT, padx=6)
+      tk.Button(btn_row, text='Cancel', command=dlg.destroy,
+                bg='#3c3c3c', fg='#d4d4d4',
+                activebackground='#505050', activeforeground='#ffffff',
+                relief=tk.FLAT, padx=14, pady=4, cursor='hand2',
+                ).pack(side=tk.LEFT, padx=6)
+
+      dlg.update_idletasks()
+      w = dlg.winfo_width()
+      h = dlg.winfo_height()
+      x = parent.winfo_x() + (parent.winfo_width() - w) // 2
+      y = parent.winfo_y() + (parent.winfo_height() - h) // 2
+      dlg.geometry('+' + str(x) + '+' + str(y))
+      dlg.grab_set()
+
+   # ---- suite command builders -------------------------------------------
+
+   def _feature_cmd(self):
       testdir = self._get_testdir() if self._get_testdir else None
-      if testdir:
-         self.inject_source(']feature ' + testdir)
-      else:
-         self.inject_source(']feature')
+      return ']feature ' + testdir if testdir else ']feature'
 
-   def _cmd_compliance(self):
-      compliancedir = self._get_compliancedir() if self._get_compliancedir else None
-      if compliancedir:
-         self.inject_source(']compliance ' + compliancedir)
-      else:
-         self.inject_source(']compliance')
+   def _compliance_cmd(self, iters):
+      d = self._get_compliancedir() if self._get_compliancedir else None
+      switch = ' -I:' + str(iters)
+      return (']compliance ' + d + switch) if d else (']compliance' + switch)
 
-   def _cmd_regression(self):
-      # Bare ]regression runs the interpreter's own auto-derived regression
-      # suite (works for every interpreter regardless of cwd).
-      self.inject_source(']regression')
+   # ---- sequencer: run checked suites one at a time ----------------------
+
+   def _run_suite_sequence(self, selected):
+      if self._busy or self._running_suites:
+         self._append('\n; a test run is already in progress.\n', TAG_ERROR)
+         return
+      self._suite_queue = [self._make_suite_step(n) for n in selected]
+      self._running_suites = True
+      self._append('\n; running test suites: ' + ', '.join(selected) + '\n',
+                   TAG_OUTPUT)
+      self._advance_suite_queue()
+
+   def _advance_suite_queue(self):
+      if not self._suite_queue:
+         if self._running_suites:
+            self._running_suites = False
+            self._append('\n; all selected test suites complete.\n', TAG_OUTPUT)
+         return
+      step = self._suite_queue.pop(0)
+      step()
+
+   def _make_suite_step(self, name):
+      if name == 'Feature':
+         return lambda: self.inject_source(self._feature_cmd())
+      if name == 'Compliance (quick)':
+         return lambda: self.inject_source(self._compliance_cmd('100k'))
+      if name == 'Compliance (slow)':
+         return self._run_compliance_slow
+      if name == 'Regressions':
+         return lambda: self.inject_source(']regression')
+      return self._advance_suite_queue   # unknown -> skip
+
+   # ---- Compliance (slow): calibrate, then run above the threshold -------
+
+   def _run_compliance_slow(self):
+      if not self._calibrate_script or not os.path.isfile(self._calibrate_script) \
+            or not self._get_interp_cmd:
+         self._append('; Compliance (slow): calibrator unavailable; skipping.\n',
+                      TAG_ERROR)
+         self._advance_suite_queue()
+         return
+      self._set_busy(True)
+      self._append(
+         "; Compliance (slow): calibrating this platform's TCO overflow\n"
+         ';   threshold (slow, memory-heavy)...\n', TAG_OUTPUT)
+      self._start_calibration(self._on_calibration_done)
+
+   def _start_calibration(self, on_done):
+      cmd = self._get_interp_cmd()
+      exe = cmd[0]
+      pre_args = ' '.join(cmd[1:]) if len(cmd) > 1 else ''
+      script = self._calibrate_script
+
+      def worker():
+         threshold = [0]
+         proc = None
+         for cand in ('pwsh', 'powershell'):
+            try:
+               proc = subprocess.Popen(
+                  [cand, '-NoProfile', '-File', script,
+                   '-InterpExe', exe, '-InterpArgs', pre_args],
+                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                  text=True, bufsize=1, cwd=os.path.dirname(script))
+               break
+            except FileNotFoundError:
+               proc = None
+               continue
+         if proc is None:
+            self.after(0, lambda: self._append(
+               '; PowerShell (pwsh/powershell) not found.\n', TAG_ERROR))
+            self.after(0, lambda: on_done(None))
+            return
+         try:
+            for line in proc.stdout:
+               s = line.rstrip('\n')
+               m = re.search(r'CALIBRATE_THRESHOLD\s+(\d+)', s)
+               if m:
+                  threshold[0] = int(m.group(1))
+               else:
+                  self.after(0, lambda t=s: self._append('  ' + t + '\n', TAG_OUTPUT))
+            proc.wait()
+         except Exception as e:
+            self.after(0, lambda e=e: self._append(
+               '; calibration error: ' + str(e) + '\n', TAG_ERROR))
+            self.after(0, lambda: on_done(None))
+            return
+         n = threshold[0]
+         if n <= 0:
+            self.after(0, lambda: on_done(None))
+         else:
+            iters = (n // 1000000 + 1) * 1000000
+            self.after(0, lambda v=iters: on_done(v))
+
+      threading.Thread(target=worker, daemon=True).start()
+
+   def _on_calibration_done(self, iters):
+      if not self._running_suites:
+         # Sequence was aborted (Stop) while calibrating.
+         self._set_busy(False)
+         self._show_prompt()
+         return
+      if iters is None:
+         self._append('; calibration failed; skipping the slow compliance run.\n',
+                      TAG_ERROR)
+         self._set_busy(False)
+         self._show_prompt()
+         self._advance_suite_queue()
+         return
+      self._append('; overflow threshold calibrated; running full compliance at '
+                   '-I:%d.\n' % iters, TAG_OUTPUT)
+      cmd = self._compliance_cmd(iters)
+      self._lines = []
+      self._append(cmd + '\n', TAG_INPUT)
+      # busy is already True from _run_compliance_slow; the eventual 'ready'
+      # advances the queue to the next suite.
+      self._bridge.submit(cmd)
 
    # ---- key handlers -----------------------------------------------------
 
