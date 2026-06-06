@@ -12,6 +12,9 @@ Queue messages put onto result_queue (same protocol as InProcessBridge):
     ('result', str)   - return value line, '==> ' prefix already stripped
     ('error',  str)   - error line,  '%%% ' prefix already stripped
     ('ready',)        - interpreter is idle; GUI should re-enable input
+    ('exited', code)  - the child process died (e.g. (exit)/]quit, or a
+                        crash) without an intentional shutdown; the GUI
+                        should restart() to recover.
 
 Prompts that trigger 'ready':  '>>> '  'debug> '
 Prompts that are suppressed:   '... '  (continuation -- ReplPane manages
@@ -26,6 +29,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 
 
 _DEFAULT_CMD         = [sys.executable, '-u', '-m', 'pyscheme']
@@ -42,19 +46,33 @@ class SubprocessBridge:
 
       self.result_queue = queue.Queue()
 
+      self._cmd = cmd or _DEFAULT_CMD
+      self._cwd = cwd or os.getcwd()
+      # Set True before an intentional kill (shutdown / interpreter switch) so
+      # the reader's EOF does not look like a crash and trigger a respawn.
+      self._closing        = False
+      self._last_spawn     = 0.0
+      self._rapid_restarts = 0
+
+      self._spawn()
+
+   def _spawn(self):
+      """(Re)spawn the interpreter subprocess and its reader thread."""
       extra = {}
       if sys.platform == 'win32':
          extra['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
 
       self._proc = subprocess.Popen(
-         cmd or _DEFAULT_CMD,
+         self._cmd,
          stdin=subprocess.PIPE,
          stdout=subprocess.PIPE,
          stderr=subprocess.STDOUT,
          bufsize=0,
-         cwd=cwd or os.getcwd(),
+         cwd=self._cwd,
          **extra,
       )
+      self._last_spawn = time.monotonic()
+      self._closing    = False
       # Swallow the one-line state echo from the startup color toggle below,
       # and the extra prompt it triggers, so boot shows one clean prompt.
       self._swallow_color_echo = True
@@ -68,8 +86,30 @@ class SubprocessBridge:
 
    # ---- public API -------------------------------------------------------
 
+   def restart(self):
+      """Respawn the interpreter after it exited (e.g. (exit)/]quit/crash).
+
+      Returns False without respawning if the process died again within a
+      second of the last spawn twice running -- a likely crash-on-boot loop
+      the caller should surface rather than spin on."""
+      if time.monotonic() - self._last_spawn < 1.0:
+         self._rapid_restarts += 1
+      else:
+         self._rapid_restarts = 0
+      if self._rapid_restarts >= 2:
+         return False
+      self._spawn()
+      return True
+
    def submit(self, source):
       """Send a (possibly multi-line) expression to the interpreter."""
+      # ]exit / ]quit would exit the interpreter to the shell -- which is
+      # meaningless under cherry and would kill the subprocess.  Intercept the
+      # bare commands and reboot the interpreter in place instead, so the user
+      # gets a fresh session at the prompt rather than a dead REPL.
+      if source.strip() in (']exit', ']quit'):
+         self._write(']reboot\n')
+         return
       for line in source.split('\n'):
          self._write(line + '\n')
 
@@ -88,7 +128,14 @@ class SubprocessBridge:
       self._write(']compliance ' + path + '\n')
 
    def reboot(self):
-      self._write(']reboot\n')
+      # If the process is alive, reboot it in place; if it already exited
+      # (e.g. after a crash-loop), the user pressing Reboot is an explicit
+      # retry -- clear the rapid-restart guard and respawn.
+      if self._proc.poll() is None:
+         self._write(']reboot\n')
+      else:
+         self._rapid_restarts = 0
+         self._spawn()
 
    def stop(self):
       if self._proc.poll() is not None:
@@ -104,6 +151,7 @@ class SubprocessBridge:
 
    def shutdown(self):
       """Terminate the child process cleanly."""
+      self._closing = True
       try:
          self._write(']quit\n')
       except OSError:
@@ -127,9 +175,14 @@ class SubprocessBridge:
 
    def _reader(self):
       buf = b''
+      proc = self._proc
       while True:
-         ch = self._proc.stdout.read(1)
+         ch = proc.stdout.read(1)
          if not ch:
+            # EOF: the child exited.  Unless we asked it to (shutdown /
+            # interpreter switch), report it so the GUI can recover.
+            if not self._closing:
+               self.result_queue.put(('exited', proc.poll()))
             break
          buf += ch
 

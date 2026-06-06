@@ -325,6 +325,22 @@ class ReplPane(tk.Frame):
                self._set_busy(False)
                self._append('\n', TAG_OUTPUT)
                self._show_prompt()
+            elif kind == 'exited':
+               # The interpreter died (e.g. (exit)/]quit, or a crash).  Respawn
+               # silently -- the fresh interpreter's boot banner is the signal.
+               self._lines = []
+               if self._debug_mode:
+                  self._debug_mode = False
+                  self._swap_toolbar()
+               if self._bridge.restart():
+                  # Stay busy until the respawned interpreter's boot 'ready'
+                  # arrives and re-enables input with a clean prompt.
+                  self._set_busy(True)
+               else:
+                  self._set_busy(False)
+                  self._append('\n; interpreter keeps exiting on startup -- '
+                               'press Reboot to retry.\n', TAG_ERROR)
+                  self._show_prompt()
       except Exception:
          pass
       self.after(50, self._poll)
