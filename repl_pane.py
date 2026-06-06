@@ -10,6 +10,7 @@ History is persisted to ~/.cherry_history across sessions.
 """
 
 import os
+import re
 import tkinter as tk
 from tkinter import filedialog, font as tkfont
 
@@ -31,6 +32,78 @@ TAG_INPUT  = 'input'
 TAG_BANNER = 'banner'
 TAG_PAREN  = 'paren_match'
 
+# ---- ANSI SGR -> Tk rendering -----------------------------------------
+# The interpreter emits terminal color escape codes when its
+# ]toggle-tty-color flag is on (cherry turns it on after boot).  The
+# faithful-replace model: these codes drive the colors, so the bridge's
+# ==>/%%% lines arrive as plain 'output' (their markers are ANSI-wrapped)
+# and we render the interpreter's own colors here.
+
+_SGR_RE = re.compile('\x1b\\[([0-9;]*)m')
+
+# Standard 16-color foreground palette (VS Code dark theme), keyed by SGR code.
+_ANSI_FG = {
+   30: '#000000', 31: '#cd3131', 32: '#0dbc79', 33: '#e5e510',
+   34: '#2472c8', 35: '#bc3fbc', 36: '#11a8cd', 37: '#e5e5e5',
+   90: '#666666', 91: '#f14c4c', 92: '#23d18b', 93: '#f5f543',
+   94: '#3b8eea', 95: '#d670d6', 96: '#29b8db', 97: '#ffffff',
+}
+
+
+def _apply_sgr(state, params):
+   """Update an SGR state dict in place from one escape's parameter string.
+   Tracks foreground / bold / dim; other attributes are parsed and ignored."""
+   codes = params.split(';') if params else ['0']
+   for c in codes:
+      n = int(c) if c else 0
+      if n == 0:
+         state['fg']   = None
+         state['bold'] = False
+         state['dim']  = False
+      elif n == 1:
+         state['bold'] = True
+      elif n == 2:
+         state['dim'] = True
+      elif n == 22:
+         state['bold'] = False
+         state['dim']  = False
+      elif n == 39:
+         state['fg'] = None
+      elif n in _ANSI_FG:
+         state['fg'] = n
+
+
+def _state_tags(state, base_tag):
+   """Map an SGR state to a tuple of Tk tag names.  A run with an explicit
+   foreground uses the ANSI color tag (not base_tag, so its color shows);
+   an uncolored run falls back to base_tag (or a dim tag)."""
+   tags = []
+   if state['fg'] is not None:
+      tags.append('ansi_fg_%d' % state['fg'])
+   elif state['dim']:
+      tags.append('ansi_dim')
+   elif base_tag:
+      tags.append(base_tag)
+   if state['bold']:
+      tags.append('ansi_bold')
+   return tuple(tags)
+
+
+def _parse_ansi(text, base_tag):
+   """Split text containing ANSI SGR codes into (run_text, tag_tuple) pairs.
+   Pure (no Tk) so it can be unit-tested headlessly."""
+   runs  = []
+   state = {'fg': None, 'bold': False, 'dim': False}
+   pos   = 0
+   for m in _SGR_RE.finditer(text):
+      if m.start() > pos:
+         runs.append((text[pos:m.start()], _state_tags(state, base_tag)))
+      _apply_sgr(state, m.group(1))
+      pos = m.end()
+   if pos < len(text):
+      runs.append((text[pos:], _state_tags(state, base_tag)))
+   return runs
+
 
 class ReplPane(tk.Frame):
    def __init__(self, parent, bridge, get_cwd=None, get_testdir=None,
@@ -44,6 +117,7 @@ class ReplPane(tk.Frame):
       self._lines      = []
       self._busy       = False
       self._debug_mode = False
+      self._show_test_tools = True   # set False (or via set_test_tools_visible) for a release build
 
       self._load_history()
       self._build()
@@ -67,32 +141,41 @@ class ReplPane(tk.Frame):
          relief=tk.FLAT, padx=10, pady=3, cursor='hand2',
       )
 
-      # ---- right-side permanent buttons (packed first so they anchor right) --
+      # ---- right-side interpreter-session controls (always visible).  Packed
+      #      first and in reverse visual order, so this yields:  Load... Reboot Stop
+      #      Stop stays pinned to the far-right corner. -----------------------
       stop_cfg = dict(btn)
       stop_cfg.update(bg='#6b1f1f', activebackground='#8b2f2f',
                       disabledforeground='#555555', state=tk.DISABLED)
       self._stop_btn = tk.Button(bar, text='Stop', command=self._cmd_stop, **stop_cfg)
       self._stop_btn.pack(side=tk.RIGHT, padx=(2, 6))
 
-      tk.Button(bar, text='Clear', command=self._cmd_clear, **btn).pack(side=tk.RIGHT, padx=2)
+      tk.Button(bar, text='Reboot',  command=self._cmd_reboot, **btn).pack(side=tk.RIGHT, padx=2)
+      tk.Button(bar, text='Load...', command=self._cmd_load,   **btn).pack(side=tk.RIGHT, padx=2)
 
-      # ---- normal-mode button group ------------------------------------------
-      self._normal_bar = tk.Frame(bar, bg='#2d2d2d')
-      self._normal_bar.pack(side=tk.LEFT, fill=tk.Y)
+      # ---- left-side screen control (always visible) -------------------------
+      tk.Button(bar, text='Clear', command=self._cmd_clear, **btn).pack(side=tk.LEFT, padx=(6, 2))
+      tk.Frame(bar, width=1, bg='#555555').pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
 
-      tk.Button(self._normal_bar, text='Reboot', command=self._cmd_reboot, **btn).pack(side=tk.LEFT, padx=(6, 2))
-      tk.Frame(self._normal_bar, width=1, bg='#555555').pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
-      tk.Button(self._normal_bar, text='Load...',       command=self._cmd_load,         **btn).pack(side=tk.LEFT, padx=2)
-      tk.Button(self._normal_bar, text='Tests...',      command=self._cmd_tests,        **btn).pack(side=tk.LEFT, padx=2)
-      tk.Button(self._normal_bar, text='Run All Tests', command=self._cmd_run_all_tests,**btn).pack(side=tk.LEFT, padx=2)
-      tk.Frame(self._normal_bar, width=1, bg='#555555').pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
+      # ---- test-suite group: one contiguous frame so it can be hidden as a
+      #      unit -- swapped out in debug mode, and easy to drop in a release
+      #      build (see set_test_tools_visible).
+      # Order:  Test...  Feature  Compliance  Regressions
+      self._test_bar = tk.Frame(bar, bg='#2d2d2d')
+      self._test_bar.pack(side=tk.LEFT, fill=tk.Y)
+
+      tk.Button(self._test_bar, text='Test...', command=self._cmd_tests, **btn).pack(side=tk.LEFT, padx=2)
+      feature_cfg = dict(btn)
+      feature_cfg.update(bg='#3a1f4e', activebackground='#5a2f6e')
+      tk.Button(self._test_bar, text='Feature',
+                command=self._cmd_feature, **feature_cfg).pack(side=tk.LEFT, padx=2)
       compliance_cfg = dict(btn)
       compliance_cfg.update(bg='#1f4e2b', activebackground='#2f6e3b')
-      tk.Button(self._normal_bar, text='R7RS Compliance',
+      tk.Button(self._test_bar, text='Compliance',
                 command=self._cmd_compliance, **compliance_cfg).pack(side=tk.LEFT, padx=2)
       regression_cfg = dict(btn)
       regression_cfg.update(bg='#1f3a4e', activebackground='#2f5a6e')
-      tk.Button(self._normal_bar, text='Regressions',
+      tk.Button(self._test_bar, text='Regressions',
                 command=self._cmd_regression, **regression_cfg).pack(side=tk.LEFT, padx=2)
 
       # ---- debug-mode button group (hidden until debugger is active) ---------
@@ -140,6 +223,17 @@ class ReplPane(tk.Frame):
       self._text.tag_configure(TAG_BANNER, foreground='#888888',
                                 font=tkfont.Font(family='Courier New', size=10))
       self._text.tag_configure(TAG_PAREN,  background='#3c3c00')
+      self._configure_ansi_tags()
+
+   def _configure_ansi_tags(self):
+      """Configure the Tk tags used to render ANSI SGR color runs.  Created
+      after the semantic tags so they take precedence when both could apply."""
+      for code, hexcol in _ANSI_FG.items():
+         self._text.tag_configure('ansi_fg_%d' % code, foreground=hexcol)
+      self._text.tag_configure('ansi_dim', foreground='#9a9a9a')
+      self._text.tag_configure('ansi_bold',
+                               font=tkfont.Font(family='Courier New', size=10,
+                                                weight='bold'))
 
    def _bind_keys(self):
       t = self._text
@@ -191,7 +285,13 @@ class ReplPane(tk.Frame):
       self._text.see(tk.END)
 
    def _append(self, text, tag=None):
-      self._text.insert(tk.END, text, (tag,) if tag else ())
+      if '\x1b' in text:
+         # Text carries ANSI SGR codes (interpreter color); render per-run.
+         for run, tags in _parse_ansi(text, tag):
+            if run:
+               self._text.insert(tk.END, run, tags)
+      else:
+         self._text.insert(tk.END, text, (tag,) if tag else ())
       self._text.see(tk.END)
 
    # ---- busy state -------------------------------------------------------
@@ -291,11 +391,24 @@ class ReplPane(tk.Frame):
 
    def _swap_toolbar(self):
       if self._debug_mode:
-         self._normal_bar.pack_forget()
+         self._test_bar.pack_forget()
          self._debug_bar.pack(side=tk.LEFT, fill=tk.Y)
       else:
          self._debug_bar.pack_forget()
-         self._normal_bar.pack(side=tk.LEFT, fill=tk.Y)
+         if self._show_test_tools:
+            self._test_bar.pack(side=tk.LEFT, fill=tk.Y)
+
+   def set_test_tools_visible(self, visible):
+      """Show or hide the Test.../Feature/Compliance/Regressions group as a
+      unit (e.g. hide it in a release build).  No effect while the debugger
+      bar is showing -- the test group is already swapped out then."""
+      self._show_test_tools = visible
+      if self._debug_mode:
+         return
+      if visible:
+         self._test_bar.pack(side=tk.LEFT, fill=tk.Y)
+      else:
+         self._test_bar.pack_forget()
 
    def _cmd_dbg_into(self):
       self._send_debug_cmd('s')
@@ -340,14 +453,14 @@ class ReplPane(tk.Frame):
          filetypes=[('Test logs', '*.log'), ('All files', '*.*')],
       )
       if path:
-         self.inject_source(']test ' + path)
+         self.inject_source(']feature ' + path)
 
-   def _cmd_run_all_tests(self):
+   def _cmd_feature(self):
       testdir = self._get_testdir() if self._get_testdir else None
       if testdir:
-         self.inject_source(']test ' + testdir)
+         self.inject_source(']feature ' + testdir)
       else:
-         self.inject_source(']test')
+         self.inject_source(']feature')
 
    def _cmd_compliance(self):
       compliancedir = self._get_compliancedir() if self._get_compliancedir else None

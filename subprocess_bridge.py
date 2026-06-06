@@ -55,8 +55,16 @@ class SubprocessBridge:
          cwd=cwd or os.getcwd(),
          **extra,
       )
+      # Swallow the one-line state echo from the startup color toggle below,
+      # and the extra prompt it triggers, so boot shows one clean prompt.
+      self._swallow_color_echo = True
+      self._swallow_next_ready = False
       self._thread = threading.Thread(target=self._reader, daemon=True)
       self._thread.start()
+      # Ask the interpreter to emit ANSI color codes even though stdout is a
+      # pipe (not a TTY); ReplPane renders them.  Interpreters that lack the
+      # command simply report it as unknown -- harmless.
+      self._write(']toggle-tty-color\n')
 
    # ---- public API -------------------------------------------------------
 
@@ -69,11 +77,11 @@ class SubprocessBridge:
       self._write(']readsrc ' + path + '\n')
 
    def submit_test(self, path):
-      self._write(']test ' + path + '\n')
+      self._write(']feature ' + path + '\n')
 
    def submit_test_dir(self, _path):
-      """Run the full test suite.  Requires testing/ in the subprocess CWD."""
-      self._write(']test\n')
+      """Run the full feature suite.  Requires testing/ in the subprocess CWD."""
+      self._write(']feature\n')
 
    def submit_compliance_dir(self, path):
       """Run the R7RS compliance suite from the given directory."""
@@ -138,7 +146,13 @@ class SubprocessBridge:
             text = self._decode(buf[:-len(matched)])
             self._emit_chunk(text)
             if matched in self._ready:
-               self.result_queue.put(('ready', matched))
+               # The startup color toggle produces an extra prompt; swallow it
+               # (paired with the swallowed 'tty-color: on' echo) so boot shows
+               # a single clean prompt.
+               if self._swallow_next_ready:
+                  self._swallow_next_ready = False
+               else:
+                  self.result_queue.put(('ready', matched))
             # cont prompts ('... '): suppressed
             buf = b''
 
@@ -156,6 +170,12 @@ class SubprocessBridge:
       immediately after on the same line).
       """
       if not text:
+         return
+      # Drop the single 'tty-color: on' echo produced by the startup toggle,
+      # and arrange to drop the extra prompt it triggers.
+      if self._swallow_color_echo and text.strip() == 'tty-color: on':
+         self._swallow_color_echo = False
+         self._swallow_next_ready = True
          return
       remaining = text
       while remaining:
