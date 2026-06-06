@@ -2,6 +2,7 @@
 plus an interpreter selector bar at the top and a CWD status button at the
 very bottom."""
 
+import json
 import os
 import pathlib
 import sys
@@ -12,6 +13,22 @@ _CHERRY_DIR = pathlib.Path.home() / '.cherry'
 
 def _state_path(key):
     return _CHERRY_DIR / ('interp' + key + '.json')
+
+_SETTINGS_PATH = _CHERRY_DIR / 'settings.json'
+
+def _load_settings():
+    try:
+        with open(_SETTINGS_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+def _save_settings(settings):
+    try:
+        with open(_SETTINGS_PATH, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2)
+    except OSError:
+        pass
 
 _LISP_DIR = pathlib.Path(__file__).resolve().parents[1]
 
@@ -65,8 +82,11 @@ class CherryApp(tk.Tk):
       self.configure(bg='#1e1e1e')
 
       _CHERRY_DIR.mkdir(exist_ok=True)
+      self._settings = _load_settings()
+      self._developer_mode = self._settings.get('developer_mode', True)
       self._bridge = SubprocessBridge(cmd=cfg['cmd'], cwd=cfg['cwd'])
       self._build()
+      self._repl.set_test_tools_visible(self._developer_mode)
       self._editor.restore_state(_state_path(self._current_interp))
       self.protocol('WM_DELETE_WINDOW', self._on_close)
 
@@ -111,6 +131,22 @@ class CherryApp(tk.Tk):
          font=tkfont.Font(family='Courier New', size=9),
          padx=8, pady=2, cursor='hand2',
       ).pack(side=tk.LEFT)
+
+      # ---- developer-mode toggle (shows/hides the REPL test-suite tools);
+      #      packed right, before the elastic CWD label, so it anchors right ----
+      self._dev_mode_var = tk.BooleanVar(value=self._developer_mode)
+      tk.Checkbutton(
+         hdr,
+         text='Dev Mode',
+         variable=self._dev_mode_var,
+         command=self._on_dev_mode_toggle,
+         bg='#252526', fg='#888888',
+         activebackground='#252526', activeforeground='#d4d4d4',
+         selectcolor='#1e1e1e',
+         highlightthickness=0, relief=tk.FLAT,
+         font=tkfont.Font(family='Courier New', size=9),
+         padx=8, cursor='hand2',
+      ).pack(side=tk.RIGHT, padx=6)
 
       self._cwd_label = tk.Label(
          hdr,
@@ -213,6 +249,12 @@ class CherryApp(tk.Tk):
       self._repl.set_bridge(new_bridge)
       self._editor.restore_state(_state_path(key))
       self.title('cherry - ' + cfg['label'])
+
+   def _on_dev_mode_toggle(self):
+      on = self._dev_mode_var.get()
+      self._repl.set_test_tools_visible(on)
+      self._settings['developer_mode'] = on
+      _save_settings(self._settings)
 
    def _cmd_chdir(self):
       path = filedialog.askdirectory(title='Change working directory',
