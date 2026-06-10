@@ -78,11 +78,13 @@ class CherryApp(tk.Tk):
       self._current_interp = _DEFAULT_INTERP
       cfg = _INTERPRETERS[_DEFAULT_INTERP]
       self.title('cherry - ' + cfg['label'])
-      self.geometry('675x700')
       self.configure(bg='#1e1e1e')
 
       _CHERRY_DIR.mkdir(exist_ok=True)
       self._settings = _load_settings()
+      # Restore the window's saved size + screen position (sash is restored in
+      # _build once the window is realized); fall back to a sensible default.
+      self.geometry(self._settings.get('window_geometry', '675x700'))
       self._developer_mode = self._settings.get('developer_mode', True)
       self._bridge = SubprocessBridge(cmd=cfg['cmd'], cwd=cfg['cwd'])
       self._build()
@@ -182,8 +184,22 @@ class CherryApp(tk.Tk):
       paned.add(self._editor, stretch='always')
       paned.add(self._repl,   stretch='always')
 
-      self.after(100, lambda: paned.sash_place(0, 0, self.winfo_height() // 2))
       self._paned = paned
+      # Restore the split-pane sash after the window is realized (so the paned
+      # height is known); default to the middle on first run.
+      self.after(100, self._restore_sash)
+
+   def _restore_sash(self):
+      saved = self._settings.get('sash_y')
+      if saved is None:
+         saved = self.winfo_height() // 2
+      h = self._paned.winfo_height()
+      if h > 40:
+         saved = max(20, min(int(saved), h - 20))   # keep the sash on-screen
+      try:
+         self._paned.sash_place(0, 0, int(saved))
+      except tk.TclError:
+         pass
 
    def _on_interp_change(self, selected_label):
       new_key = next(
@@ -277,7 +293,18 @@ class CherryApp(tk.Tk):
       """Relay editor Run / Help button to the REPL."""
       self._repl.inject_source(source)
 
+   def _save_geometry(self):
+      """Persist the window size + screen position and the split-pane sash y so
+      the layout is restored on next launch.  Best-effort: never block close."""
+      try:
+         self._settings['window_geometry'] = self.geometry()   # "WxH+X+Y"
+         self._settings['sash_y'] = self._paned.sash_coord(0)[1]
+         _save_settings(self._settings)
+      except Exception:
+         pass
+
    def _on_close(self):
+      self._save_geometry()
       self._editor.save_state(_state_path(self._current_interp))
       self._repl.save_history()
       self._bridge.shutdown()
