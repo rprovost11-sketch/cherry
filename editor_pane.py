@@ -178,7 +178,10 @@ class EditorPane(tk.Frame):
             return
          self._filepath = path
       try:
-         content = self._text.get('1.0', tk.END)
+         # 'end-1c' drops the Text widget's implicit trailing newline; using
+         # 'end' would append one blank line on every save (and grow each time
+         # the file is reopened and re-saved).
+         content = self._text.get('1.0', 'end-1c')
          with open(self._filepath, 'w', encoding='utf-8') as f:
             f.write(content)
       except OSError as e:
@@ -222,7 +225,10 @@ class EditorPane(tk.Frame):
    def save_state(self, state_path: pathlib.Path):
       self._state_path = state_path
       try:
-         content = self._text.get('1.0', tk.END)
+         # 'end-1c' drops the Text widget's implicit trailing newline; using
+         # 'end' here is what made the session state (and thus the editor)
+         # accrete a blank line on every save/restore cycle.
+         content = self._text.get('1.0', 'end-1c')
          yview   = self._text.yview()[0]
       except Exception:
          return
