@@ -176,7 +176,6 @@ class CherryApp(tk.Tk):
                               get_testdir=lambda: _INTERPRETERS[self._current_interp].get('testdir'),
                               get_compliancedir=lambda: _INTERPRETERS[self._current_interp].get('compliancedir'),
                               get_interp_cmd=lambda: _INTERPRETERS[self._current_interp]['cmd'],
-                              calibrate_script=str(_LISP_DIR / '4CPPScheme2' / 'bench' / 'calibrate_tco.ps1'),
                               get_suite_selection=lambda: self._settings.get('suite_selection', {}),
                               save_suite_selection=self._save_suite_selection,
                               bg='#1e1e1e')
