@@ -108,15 +108,12 @@ def _parse_ansi(text, base_tag):
 
 
 class ReplPane(tk.Frame):
-   def __init__(self, parent, bridge, get_cwd=None, get_testdir=None,
-                get_compliancedir=None, get_interp_cmd=None,
+   def __init__(self, parent, bridge, get_cwd=None, get_interp_cmd=None,
                 get_suite_selection=None,
                 save_suite_selection=None, **kwargs):
       super().__init__(parent, **kwargs)
       self._bridge             = bridge
       self._get_cwd            = get_cwd or os.getcwd
-      self._get_testdir        = get_testdir
-      self._get_compliancedir  = get_compliancedir
       self._get_interp_cmd     = get_interp_cmd      # () -> current interpreter cmd list
       self._get_suite_selection  = get_suite_selection   # () -> {name: bool}
       self._save_suite_selection = save_suite_selection  # (dict) -> persist

@@ -38,8 +38,6 @@ def _save_settings(settings):
 
 _LISP_DIR = pathlib.Path(__file__).resolve().parents[1]
 
-_R7RS_COMPLIANCE_DIR = str(_LISP_DIR / 'scheme-tests' / 'R7RS-Compliance-Tests')
-
 
 def _quote(s):
     """Quote a path for inclusion in a command-line string if it has spaces."""
@@ -77,20 +75,16 @@ def _default_interpreters():
     return [
         {'id': '1', 'label': '1 · PythonsLisp',
          'cmd':  py + ' -u -m pythonslisp',
-         'cwd':  str(_LISP_DIR / '1PythonsLisp'),
-         'compliancedir': '', 'testdir': ''},
+         'cwd':  str(_LISP_DIR / '1PythonsLisp')},
         {'id': '2', 'label': '2 · CPPScheme',
          'cmd':  _quote(str(_LISP_DIR / '2CPPScheme' / 'build' / 'Release' / 'scheme.exe')),
-         'cwd':  str(_LISP_DIR / '2CPPScheme'),
-         'compliancedir': '', 'testdir': ''},
+         'cwd':  str(_LISP_DIR / '2CPPScheme')},
         {'id': '3', 'label': '3 · PyScheme',
          'cmd':  py + ' -u -m pyscheme',
-         'cwd':  str(_LISP_DIR / '3PyScheme'),
-         'compliancedir': _R7RS_COMPLIANCE_DIR, 'testdir': ''},
+         'cwd':  str(_LISP_DIR / '3PyScheme')},
         {'id': '4', 'label': '4 · CPPScheme2',
          'cmd':  _quote(str(_LISP_DIR / '4CPPScheme2' / 'build' / 'Release' / 'cppscheme2.exe')),
-         'cwd':  str(_LISP_DIR / '4CPPScheme2'),
-         'compliancedir': '', 'testdir': ''},
+         'cwd':  str(_LISP_DIR / '4CPPScheme2')},
     ]
 
 
@@ -114,12 +108,10 @@ def _normalize_interpreters(raw):
             iid = _fresh_id(seen)
         seen.add(iid)
         out.append({
-            'id':            iid,
-            'label':         label,
-            'cmd':           cmd,
-            'cwd':           str(item.get('cwd', '') or ''),
-            'compliancedir': str(item.get('compliancedir', '') or ''),
-            'testdir':       str(item.get('testdir', '') or ''),
+            'id':    iid,
+            'label': label,
+            'cmd':   cmd,
+            'cwd':   str(item.get('cwd', '') or ''),
         })
     return out or None
 
@@ -270,8 +262,6 @@ class CherryApp(tk.Tk):
       self._editor = EditorPane(paned, on_run=self._on_run, bg='#1e1e1e')
       self._repl   = ReplPane(paned, bridge=self._bridge,
                               get_cwd=lambda: self._cwd_var.get(),
-                              get_testdir=lambda: (self._current_cfg().get('testdir') or None),
-                              get_compliancedir=lambda: (self._current_cfg().get('compliancedir') or None),
                               get_interp_cmd=lambda: self._cmd_list(self._current_cfg()),
                               get_suite_selection=lambda: self._settings.get('suite_selection', {}),
                               save_suite_selection=self._save_suite_selection,
@@ -396,6 +386,9 @@ class CherryApp(tk.Tk):
       old_cmd = old.get('cmd') if old else None
       old_cwd = (old.get('cwd') or '') if old else ''
 
+      # Canonicalize (drop any stale fields, dedupe ids) before storing so the
+      # saved file always matches the current schema.
+      new_interpreters = _normalize_interpreters(new_interpreters) or new_interpreters
       self._interpreters = new_interpreters
       self._settings['interpreters'] = new_interpreters
 

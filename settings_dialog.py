@@ -47,24 +47,20 @@ class _InterpRow:
                             highlightthickness=1, padx=8, pady=6)
       self.frame.pack(fill=tk.X, padx=2, pady=4)
 
-      self.name_var          = tk.StringVar(value=cfg.get('label', ''))
-      self.cmd_var           = tk.StringVar(value=cfg.get('cmd', ''))
-      self.cwd_var           = tk.StringVar(value=cfg.get('cwd', ''))
-      self.compliancedir_var = tk.StringVar(value=cfg.get('compliancedir', ''))
-      self.testdir_var       = tk.StringVar(value=cfg.get('testdir', ''))
+      self.name_var = tk.StringVar(value=cfg.get('label', ''))
+      self.cmd_var  = tk.StringVar(value=cfg.get('cmd', ''))
+      self.cwd_var  = tk.StringVar(value=cfg.get('cwd', ''))
 
-      self._field('Name',           self.name_var,          0)
-      self._field('Command line',   self.cmd_var,           1)
-      self._field('Working dir',    self.cwd_var,           2, browse=True)
-      self._field('Compliance dir', self.compliancedir_var, 3, browse=True)
-      self._field('Test dir',       self.testdir_var,       4, browse=True)
+      self._field('Name',         self.name_var, 0)
+      self._field('Command line', self.cmd_var,  1)
+      self._field('Working dir',  self.cwd_var,  2, browse=True)
       self.frame.columnconfigure(1, weight=1)
 
       tk.Button(self.frame, text='Remove', command=self._remove,
                 bg='#6b1f1f', fg=_FG, activebackground='#8b2f2f',
                 activeforeground='#ffffff', relief=tk.FLAT,
                 padx=10, pady=2, cursor='hand2', font=_font(),
-                ).grid(row=5, column=2, sticky=tk.E, pady=(6, 0))
+                ).grid(row=3, column=2, sticky=tk.E, pady=(6, 0))
 
    def _field(self, label, var, r, browse=False):
       tk.Label(self.frame, text=label, bg=_BG, fg=_MUTED, anchor=tk.W,
@@ -94,12 +90,10 @@ class _InterpRow:
 
    def to_cfg(self):
       return {
-         'id':            self.iid,
-         'label':         self.name_var.get().strip(),
-         'cmd':           self.cmd_var.get().strip(),
-         'cwd':           self.cwd_var.get().strip(),
-         'compliancedir': self.compliancedir_var.get().strip(),
-         'testdir':       self.testdir_var.get().strip(),
+         'id':    self.iid,
+         'label': self.name_var.get().strip(),
+         'cmd':   self.cmd_var.get().strip(),
+         'cwd':   self.cwd_var.get().strip(),
       }
 
 
@@ -228,8 +222,7 @@ class SettingsDialog(tk.Toplevel):
       return {r.iid for r in self._rows}
 
    def _add_row(self):
-      cfg = {'id': _fresh_id(self._used_ids()), 'label': '', 'cmd': '',
-             'cwd': '', 'compliancedir': '', 'testdir': ''}
+      cfg = {'id': _fresh_id(self._used_ids()), 'label': '', 'cmd': '', 'cwd': ''}
       self._rows.append(_InterpRow(self, self._list, cfg))
       self._sync_scrollregion()
       self._canvas.yview_moveto(1.0)
