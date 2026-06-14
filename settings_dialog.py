@@ -156,10 +156,13 @@ class SettingsDialog(tk.Toplevel):
                 activeforeground='#ffffff', relief=tk.FLAT,
                 padx=10, pady=2, cursor='hand2', font=_font(),
                 ).pack(side=tk.RIGHT)
-      tk.Label(hdr,
+
+      # Hint on its own line so it can't be clipped by the Add button above.
+      tk.Label(self,
                text="Command line is parsed like a shell line "
                     "(quote paths with spaces).",
-               bg=_BG, fg=_MUTED, font=_font()).pack(side=tk.LEFT, padx=(12, 0))
+               bg=_BG, fg=_MUTED, anchor=tk.W, font=_font(),
+               ).pack(fill=tk.X, padx=16, pady=(0, 2))
 
       # ---- scrollable interpreter list ----------------------------------
       outer = tk.Frame(self, bg=_BG)
