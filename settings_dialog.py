@@ -102,7 +102,7 @@ class SettingsDialog(tk.Toplevel):
    dev-mode flag; on Save it calls on_save(new_interpreters, developer_mode)."""
 
    def __init__(self, parent, interpreters, developer_mode,
-                editor_font, repl_font, history_max, on_save):
+                editor_font, repl_font, on_save):
       super().__init__(parent)
       self._on_save = on_save
       self._rows    = []
@@ -114,7 +114,7 @@ class SettingsDialog(tk.Toplevel):
       self.geometry('660x680')
 
       self._dev_var = tk.BooleanVar(value=bool(developer_mode))
-      self._build(interpreters, editor_font, repl_font, history_max)
+      self._build(interpreters, editor_font, repl_font)
 
       self.update_idletasks()
       w = self.winfo_width()
@@ -127,7 +127,7 @@ class SettingsDialog(tk.Toplevel):
 
    # ---- construction -----------------------------------------------------
 
-   def _build(self, interpreters, editor_font, repl_font, history_max):
+   def _build(self, interpreters, editor_font, repl_font):
       # ---- General -------------------------------------------------------
       gen = tk.Frame(self, bg=_BG)
       gen.pack(fill=tk.X, padx=16, pady=(14, 4))
@@ -142,7 +142,7 @@ class SettingsDialog(tk.Toplevel):
       tk.Frame(self, height=1, bg='#555555').pack(fill=tk.X, padx=16, pady=6)
 
       # ---- Appearance ----------------------------------------------------
-      self._build_appearance(editor_font, repl_font, history_max)
+      self._build_appearance(editor_font, repl_font)
 
       tk.Frame(self, height=1, bg='#555555').pack(fill=tk.X, padx=16, pady=6)
 
@@ -209,12 +209,11 @@ class SettingsDialog(tk.Toplevel):
 
    # ---- appearance section ----------------------------------------------
 
-   def _build_appearance(self, editor_font, repl_font, history_max):
+   def _build_appearance(self, editor_font, repl_font):
       self._ed_family = tk.StringVar(value=editor_font.get('family', 'Courier New'))
       self._ed_size   = tk.StringVar(value=str(editor_font.get('size', 10)))
       self._rp_family = tk.StringVar(value=repl_font.get('family', 'Courier New'))
       self._rp_size   = tk.StringVar(value=str(repl_font.get('size', 10)))
-      self._hist_var  = tk.StringVar(value=str(history_max))
 
       # Preview fonts are reconfigured live as the user edits family/size.
       self._ed_preview = _font(int(editor_font.get('size', 10)))
@@ -224,17 +223,6 @@ class SettingsDialog(tk.Toplevel):
                      self._ed_preview)
       self._font_row('REPL font', self._rp_family, self._rp_size,
                      self._rp_preview)
-
-      hist = tk.Frame(self, bg=_BG)
-      hist.pack(fill=tk.X, padx=16, pady=(6, 0))
-      tk.Label(hist, text='REPL history', bg=_BG, fg=_FG, width=11, anchor=tk.W,
-               font=_font()).pack(side=tk.LEFT)
-      tk.Spinbox(hist, from_=10, to=100000, increment=50, width=8,
-                 textvariable=self._hist_var, justify=tk.RIGHT,
-                 bg=_ENTRY_BG, fg=_FG, relief=tk.FLAT, insertbackground=_FG,
-                 buttonbackground=_FIELD, font=_font()).pack(side=tk.LEFT)
-      tk.Label(hist, text='entries kept across sessions', bg=_BG, fg=_MUTED,
-               font=_font()).pack(side=tk.LEFT, padx=(8, 0))
 
       # Initial preview render + live updates on edit.
       self._refresh_preview(self._ed_family, self._ed_size, self._ed_preview)
@@ -387,14 +375,6 @@ class SettingsDialog(tk.Toplevel):
          self._err.configure(
             text='Font size must be a whole number from 6 to 72.')
          return
-      try:
-         history_max = int(self._hist_var.get())
-      except (TypeError, ValueError):
-         history_max = None
-      if history_max is None or not (10 <= history_max <= 100000):
-         self._err.configure(
-            text='REPL history must be a whole number from 10 to 100000.')
-         return
 
       self._unbind_wheel()
       self._on_save({
@@ -402,7 +382,6 @@ class SettingsDialog(tk.Toplevel):
          'developer_mode': bool(self._dev_var.get()),
          'editor_font':    editor_font,
          'repl_font':      repl_font,
-         'history_max':    history_max,
       })
       self.destroy()
 

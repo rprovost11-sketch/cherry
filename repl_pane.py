@@ -2,11 +2,10 @@
 
 The full buffer is always editable, but key bindings enforce the rule that
 destructive keystrokes (BackSpace, Delete, printable characters) cannot
-modify text before the 'input_start' mark.  Cursor movement keys work
-freely throughout.  Up/Down cycle history instead of moving the cursor
-vertically.
-
-History is persisted to ~/.cherry_history across sessions.
+modify text before the 'input_start' mark.  Cursor movement keys work freely
+throughout.  To recall a previous expression, move the caret onto it and press
+Enter: it is copied down to the live prompt for editing and resubmission (see
+_extract_expr_at_cursor); this works off the on-screen buffer.
 """
 
 import os
@@ -23,8 +22,6 @@ from cherry.parens import make_code_map, find_match
 PROMPT        = '>>> '
 CONT_PROMPT   = '... '
 DEBUG_PROMPT  = 'debug> '
-_HIST_FILE    = os.path.expanduser('~/.cherry_history')
-_HIST_MAX     = 500
 
 TAG_PROMPT = 'prompt'
 TAG_OUTPUT = 'output'
@@ -110,20 +107,17 @@ def _parse_ansi(text, base_tag):
 class ReplPane(tk.Frame):
    def __init__(self, parent, bridge, get_cwd=None, get_interp_cmd=None,
                 get_suite_selection=None, save_suite_selection=None,
-                font_family='Courier New', font_size=10,
-                history_max=_HIST_MAX, **kwargs):
+                font_family='Courier New', font_size=10, **kwargs):
       super().__init__(parent, **kwargs)
       self._bridge             = bridge
       self._get_cwd            = get_cwd or os.getcwd
       self._get_interp_cmd     = get_interp_cmd      # () -> current interpreter cmd list
       self._get_suite_selection  = get_suite_selection   # () -> {name: bool}
       self._save_suite_selection = save_suite_selection  # (dict) -> persist
-      self._history    = []
       self._lines      = []
       self._busy       = False
       self._debug_mode = False
       self._show_test_tools = True   # set False (or via set_test_tools_visible) for a release build
-      self._hist_max   = history_max
 
       # The REPL font is owned here (not a per-call literal) so set_font can
       # restyle the live widget; the bold variant tracks it for ANSI bold runs.
@@ -131,7 +125,6 @@ class ReplPane(tk.Frame):
       self._bold_font = tkfont.Font(family=font_family, size=font_size,
                                     weight='bold')
 
-      self._load_history()
       self._build()
       self._bind_keys()
       # Banner and first prompt arrive from bridge via queue; no _show_prompt() here.
@@ -256,25 +249,6 @@ class ReplPane(tk.Frame):
       t.bind('<Home>',      self._on_home)
       t.bind('<Key>',       self._on_key)
       t.bind('<<Paste>>',   self._on_paste)
-
-   # ---- persistent history -----------------------------------------------
-
-   def _load_history(self):
-      try:
-         with open(_HIST_FILE, 'r', encoding='utf-8') as f:
-            raw = f.read()
-         entries = raw.split('\x00')
-         self._history = [e for e in entries if e.strip()]
-      except FileNotFoundError:
-         pass
-
-   def save_history(self):
-      tail = self._history[-self._hist_max:]
-      try:
-         with open(_HIST_FILE, 'w', encoding='utf-8') as f:
-            f.write('\x00'.join(tail))
-      except OSError:
-         pass
 
    # ---- prompt / output --------------------------------------------------
 
@@ -431,10 +405,6 @@ class ReplPane(tk.Frame):
       """Restyle the REPL text (and its bold ANSI variant) live."""
       self._font.configure(family=family, size=size)
       self._bold_font.configure(family=family, size=size)
-
-   def set_history_max(self, n):
-      """Update the cap on persisted history entries (applied on next save)."""
-      self._hist_max = n
 
    def set_test_tools_visible(self, visible):
       """Show or hide the Test.../Feature/Compliance/Regressions group as a
@@ -781,7 +751,6 @@ class ReplPane(tk.Frame):
       source = combined.strip()
       self._lines = []
       if source:
-         self._history.append(source)
          self._set_busy(True)
          self._bridge.submit(source)
       else:
@@ -881,7 +850,6 @@ class ReplPane(tk.Frame):
       self._text.insert('input_start', source, (TAG_INPUT,))
       self._append('\n', TAG_INPUT)
       if source.strip():
-         self._history.append(source)
          self._set_busy(True)
          self._bridge.submit(source)
       else:
