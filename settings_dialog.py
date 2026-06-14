@@ -260,11 +260,50 @@ class SettingsDialog(tk.Toplevel):
                  justify=tk.RIGHT, bg=_ENTRY_BG, fg=_FG, relief=tk.FLAT,
                  insertbackground=_FG, buttonbackground=_FIELD, font=_font(),
                  ).grid(row=0, column=3)
+      tk.Button(row, text='Choose...',
+                command=lambda: self._choose_font(fam_var, size_var),
+                bg=_FIELD, fg=_FG, activebackground='#505050',
+                activeforeground='#ffffff', relief=tk.FLAT, padx=8,
+                cursor='hand2', font=_font(),
+                ).grid(row=0, column=4, padx=(8, 0))
       tk.Label(row, text='(define (f x) (* x x))   ; preview 0123',
                bg=_ENTRY_BG, fg='#9a9a9a', anchor=tk.W, font=preview_font,
-               padx=6, pady=2).grid(row=1, column=1, columnspan=3,
+               padx=6, pady=2).grid(row=1, column=1, columnspan=4,
                                     sticky=tk.EW, pady=(3, 0))
       row.columnconfigure(1, weight=1)
+
+   def _choose_font(self, fam_var, size_var):
+      """Open the OS-native font chooser (Tk 8.6 `tk fontchooser`), seeded with
+      the current family/size, and write the picked family + size back into the
+      entry/spinbox.  The chooser is modeless and delivers its result through a
+      callback; we ignore weight/slant since we only store family + size."""
+      fam = fam_var.get().strip() or 'Courier New'
+      try:
+         size = int(size_var.get())
+      except (TypeError, ValueError):
+         size = 10
+
+      def _picked(*args):
+         if not args:
+            return
+         try:
+            chosen = tkfont.Font(self, font=args[0])
+            picked_fam  = chosen.actual('family')
+            picked_size = abs(int(chosen.actual('size'))) or size
+         except (tk.TclError, ValueError):
+            return
+         fam_var.set(picked_fam)            # traces refresh the live preview
+         size_var.set(str(picked_size))
+
+      try:
+         self.tk.call('tk', 'fontchooser', 'configure',
+                      '-parent', self._w,
+                      '-title', 'Choose font',
+                      '-font', (fam, size),
+                      '-command', self.register(_picked))
+         self.tk.call('tk', 'fontchooser', 'show')
+      except tk.TclError:
+         pass   # no chooser on this platform -- the entry/spinbox still work
 
    def _refresh_preview(self, fam_var, size_var, preview_font):
       fam = fam_var.get().strip() or 'Courier New'
