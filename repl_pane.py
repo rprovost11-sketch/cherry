@@ -846,7 +846,16 @@ class ReplPane(tk.Frame):
          return
       self._lines = []
       self._text.delete('input_start', 'end-1c')
-      self._text.insert('input_start', source, (TAG_INPUT,))
+      # Render multi-line input with '... ' continuation prefixes, exactly like
+      # typed input, so the buffer stays consistent and expression-recall (which
+      # keys off the >>> / ... prefixes to know which lines belong to the
+      # expression) can reassemble the whole block, not just its first line.
+      src_lines = source.split('\n')
+      self._text.insert('input_start', src_lines[0], (TAG_INPUT,))
+      for cont in src_lines[1:]:
+         self._append('\n', TAG_INPUT)
+         self._append(CONT_PROMPT, TAG_PROMPT)
+         self._append(cont, TAG_INPUT)
       self._append('\n', TAG_INPUT)
       if source.strip():
          self._set_busy(True)
