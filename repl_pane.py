@@ -725,7 +725,7 @@ class ReplPane(tk.Frame):
             self._replace_input(expr)
          return 'break'
 
-      line = self._text.get('input_start', 'end-1c')
+      line = self._input_source()
 
       # Super-bracket: trailing ']' closes all open parens
       if line.endswith(']'):
@@ -822,10 +822,34 @@ class ReplPane(tk.Frame):
       return '\n'.join(lines)
 
    def _replace_input(self, text):
+      """Put text into the live input, rendering continuation lines with a
+      '... ' prompt prefix (display only -- _on_return strips it back off before
+      submitting, so the prefixes never enter the expression).  The whole block
+      stays editable."""
       self._text.delete('input_start', 'end-1c')
-      self._text.insert('input_start', text, (TAG_INPUT,))
+      lines = text.split('\n')
+      self._text.insert('input_start', lines[0], (TAG_INPUT,))
+      for cont in lines[1:]:
+         self._append('\n', TAG_INPUT)
+         self._append(CONT_PROMPT, TAG_PROMPT)
+         self._append(cont, TAG_INPUT)
       self._text.mark_set(tk.INSERT, tk.END)
       self._text.see(tk.END)
+
+   def _input_source(self):
+      """Read the current input block, stripping the display-only '... '
+      continuation prefixes that _replace_input adds for recalled multi-line
+      expressions.  Lines without the prefix (e.g. pasted text) are kept
+      verbatim, so this is safe for all input."""
+      raw = self._text.get('input_start', 'end-1c')
+      if '\n' not in raw:
+         return raw
+      parts = raw.split('\n')
+      cleaned = [parts[0]] + [
+         p[len(CONT_PROMPT):] if p.startswith(CONT_PROMPT) else p
+         for p in parts[1:]
+      ]
+      return '\n'.join(cleaned)
 
    # ---- public helpers ---------------------------------------------------
 
