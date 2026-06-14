@@ -125,6 +125,41 @@ def _fresh_id(existing):
         n += 1
 
 
+# ---- appearance / misc settings (defaults + readers) ----------------------
+
+_DEFAULT_FONT_FAMILY = 'Courier New'
+_DEFAULT_EDITOR_SIZE = 10
+_DEFAULT_REPL_SIZE   = 10
+_DEFAULT_HISTORY_MAX = 500
+_MIN_FONT_SIZE       = 6
+_MAX_FONT_SIZE       = 72
+_MIN_HISTORY_MAX     = 10
+_MAX_HISTORY_MAX     = 100000
+
+
+def _font_setting(settings, key, default_size):
+    """Read a {'family', 'size'} font setting, clamping/repairing bad values."""
+    raw = settings.get(key)
+    family, size = _DEFAULT_FONT_FAMILY, default_size
+    if isinstance(raw, dict):
+        family = str(raw.get('family') or _DEFAULT_FONT_FAMILY)
+        try:
+            size = int(raw.get('size', default_size))
+        except (TypeError, ValueError):
+            size = default_size
+        if not (_MIN_FONT_SIZE <= size <= _MAX_FONT_SIZE):
+            size = default_size
+    return {'family': family, 'size': size}
+
+
+def _history_max_setting(settings):
+    try:
+        n = int(settings.get('history_max', _DEFAULT_HISTORY_MAX))
+    except (TypeError, ValueError):
+        return _DEFAULT_HISTORY_MAX
+    return n if _MIN_HISTORY_MAX <= n <= _MAX_HISTORY_MAX else _DEFAULT_HISTORY_MAX
+
+
 from cherry.subprocess_bridge import SubprocessBridge
 from cherry.editor_pane       import EditorPane
 from cherry.repl_pane         import ReplPane
@@ -160,6 +195,14 @@ class CherryApp(tk.Tk):
       # _build once the window is realized); fall back to a sensible default.
       self.geometry(self._settings.get('window_geometry', '675x700'))
       self._developer_mode = self._settings.get('developer_mode', True)
+
+      # Appearance / history preferences (live-editable via Settings...).
+      self._editor_font_cfg = _font_setting(self._settings, 'editor_font',
+                                            _DEFAULT_EDITOR_SIZE)
+      self._repl_font_cfg   = _font_setting(self._settings, 'repl_font',
+                                            _DEFAULT_REPL_SIZE)
+      self._history_max     = _history_max_setting(self._settings)
+
       self._bridge = SubprocessBridge(cmd=self._cmd_list(cfg),
                                       cwd=cfg.get('cwd') or None)
       self._build()
@@ -259,12 +302,17 @@ class CherryApp(tk.Tk):
       )
       paned.pack(fill=tk.BOTH, expand=True)
 
-      self._editor = EditorPane(paned, on_run=self._on_run, bg='#1e1e1e')
+      self._editor = EditorPane(paned, on_run=self._on_run, bg='#1e1e1e',
+                                font_family=self._editor_font_cfg['family'],
+                                font_size=self._editor_font_cfg['size'])
       self._repl   = ReplPane(paned, bridge=self._bridge,
                               get_cwd=lambda: self._cwd_var.get(),
                               get_interp_cmd=lambda: self._cmd_list(self._current_cfg()),
                               get_suite_selection=lambda: self._settings.get('suite_selection', {}),
                               save_suite_selection=self._save_suite_selection,
+                              font_family=self._repl_font_cfg['family'],
+                              font_size=self._repl_font_cfg['size'],
+                              history_max=self._history_max,
                               bg='#1e1e1e')
 
       paned.add(self._editor, stretch='always')
@@ -377,11 +425,18 @@ class CherryApp(tk.Tk):
       SettingsDialog(self,
                      interpreters=[dict(it) for it in self._interpreters],
                      developer_mode=self._developer_mode,
+                     editor_font=dict(self._editor_font_cfg),
+                     repl_font=dict(self._repl_font_cfg),
+                     history_max=self._history_max,
                      on_save=self._apply_settings)
 
-   def _apply_settings(self, new_interpreters, developer_mode):
-      """Callback from the Settings dialog: adopt the edited interpreter list
-      and dev-mode flag, persist them, and reconcile the running session."""
+   def _apply_settings(self, result):
+      """Callback from the Settings dialog: adopt the edited settings, persist
+      them, and reconcile the running session.  `result` carries 'interpreters',
+      'developer_mode', 'editor_font', 'repl_font', and 'history_max'."""
+      new_interpreters = result['interpreters']
+      developer_mode   = result['developer_mode']
+
       old = self._interp_by_id(self._current_interp)
       old_cmd = old.get('cmd') if old else None
       old_cwd = (old.get('cwd') or '') if old else ''
@@ -396,6 +451,19 @@ class CherryApp(tk.Tk):
          self._developer_mode = developer_mode
          self._repl.set_test_tools_visible(developer_mode)
          self._settings['developer_mode'] = developer_mode
+
+      # ---- appearance + history (live) ----
+      self._editor_font_cfg = result['editor_font']
+      self._repl_font_cfg   = result['repl_font']
+      self._history_max     = result['history_max']
+      self._editor.set_font(self._editor_font_cfg['family'],
+                            self._editor_font_cfg['size'])
+      self._repl.set_font(self._repl_font_cfg['family'],
+                          self._repl_font_cfg['size'])
+      self._repl.set_history_max(self._history_max)
+      self._settings['editor_font'] = self._editor_font_cfg
+      self._settings['repl_font']   = self._repl_font_cfg
+      self._settings['history_max'] = self._history_max
 
       cur = self._interp_by_id(self._current_interp)
       if cur is None:

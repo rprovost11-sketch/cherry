@@ -109,8 +109,9 @@ def _parse_ansi(text, base_tag):
 
 class ReplPane(tk.Frame):
    def __init__(self, parent, bridge, get_cwd=None, get_interp_cmd=None,
-                get_suite_selection=None,
-                save_suite_selection=None, **kwargs):
+                get_suite_selection=None, save_suite_selection=None,
+                font_family='Courier New', font_size=10,
+                history_max=_HIST_MAX, **kwargs):
       super().__init__(parent, **kwargs)
       self._bridge             = bridge
       self._get_cwd            = get_cwd or os.getcwd
@@ -122,6 +123,13 @@ class ReplPane(tk.Frame):
       self._busy       = False
       self._debug_mode = False
       self._show_test_tools = True   # set False (or via set_test_tools_visible) for a release build
+      self._hist_max   = history_max
+
+      # The REPL font is owned here (not a per-call literal) so set_font can
+      # restyle the live widget; the bold variant tracks it for ANSI bold runs.
+      self._font      = tkfont.Font(family=font_family, size=font_size)
+      self._bold_font = tkfont.Font(family=font_family, size=font_size,
+                                    weight='bold')
 
       self._load_history()
       self._build()
@@ -199,13 +207,12 @@ class ReplPane(tk.Frame):
       tk.Button(self._debug_bar, text='Abort', command=self._cmd_dbg_abort, **abort_cfg).pack(side=tk.LEFT, padx=2)
 
    def _build_text(self):
-      mono = tkfont.Font(family='Courier New', size=10)
       frame = tk.Frame(self)
       frame.pack(fill=tk.BOTH, expand=True)
 
       self._text = tk.Text(
          frame,
-         font=mono,
+         font=self._font,
          wrap=tk.WORD,
          undo=False,
          bg='#1e1e1e',
@@ -226,8 +233,8 @@ class ReplPane(tk.Frame):
       self._text.tag_configure(TAG_RESULT, foreground='#4ec9b0')
       self._text.tag_configure(TAG_ERROR,  foreground='#f44747')
       self._text.tag_configure(TAG_INPUT,  foreground='#d4d4d4')
-      self._text.tag_configure(TAG_BANNER, foreground='#888888',
-                                font=tkfont.Font(family='Courier New', size=10))
+      # No explicit font -> inherits the widget font, so it tracks set_font.
+      self._text.tag_configure(TAG_BANNER, foreground='#888888')
       self._text.tag_configure(TAG_PAREN,  background='#3c3c00')
       self._configure_ansi_tags()
 
@@ -237,9 +244,7 @@ class ReplPane(tk.Frame):
       for code, hexcol in _ANSI_FG.items():
          self._text.tag_configure('ansi_fg_%d' % code, foreground=hexcol)
       self._text.tag_configure('ansi_dim', foreground='#9a9a9a')
-      self._text.tag_configure('ansi_bold',
-                               font=tkfont.Font(family='Courier New', size=10,
-                                                weight='bold'))
+      self._text.tag_configure('ansi_bold', font=self._bold_font)
 
    def _bind_keys(self):
       t = self._text
@@ -264,7 +269,7 @@ class ReplPane(tk.Frame):
          pass
 
    def save_history(self):
-      tail = self._history[-_HIST_MAX:]
+      tail = self._history[-self._hist_max:]
       try:
          with open(_HIST_FILE, 'w', encoding='utf-8') as f:
             f.write('\x00'.join(tail))
@@ -421,6 +426,15 @@ class ReplPane(tk.Frame):
          self._debug_bar.pack_forget()
          if self._show_test_tools:
             self._test_bar.pack(side=tk.LEFT, fill=tk.Y)
+
+   def set_font(self, family, size):
+      """Restyle the REPL text (and its bold ANSI variant) live."""
+      self._font.configure(family=family, size=size)
+      self._bold_font.configure(family=family, size=size)
+
+   def set_history_max(self, n):
+      """Update the cap on persisted history entries (applied on next save)."""
+      self._hist_max = n
 
    def set_test_tools_visible(self, visible):
       """Show or hide the Test.../Feature/Compliance/Regressions group as a

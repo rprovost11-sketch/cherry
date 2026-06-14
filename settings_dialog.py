@@ -101,7 +101,8 @@ class SettingsDialog(tk.Toplevel):
    """Modal settings window.  Construct with the current interpreter list and
    dev-mode flag; on Save it calls on_save(new_interpreters, developer_mode)."""
 
-   def __init__(self, parent, interpreters, developer_mode, on_save):
+   def __init__(self, parent, interpreters, developer_mode,
+                editor_font, repl_font, history_max, on_save):
       super().__init__(parent)
       self._on_save = on_save
       self._rows    = []
@@ -109,11 +110,11 @@ class SettingsDialog(tk.Toplevel):
       self.title('Settings')
       self.configure(bg=_BG)
       self.transient(parent)
-      self.minsize(560, 420)
-      self.geometry('660x600')
+      self.minsize(560, 520)
+      self.geometry('660x680')
 
       self._dev_var = tk.BooleanVar(value=bool(developer_mode))
-      self._build(interpreters)
+      self._build(interpreters, editor_font, repl_font, history_max)
 
       self.update_idletasks()
       w = self.winfo_width()
@@ -126,7 +127,7 @@ class SettingsDialog(tk.Toplevel):
 
    # ---- construction -----------------------------------------------------
 
-   def _build(self, interpreters):
+   def _build(self, interpreters, editor_font, repl_font, history_max):
       # ---- General -------------------------------------------------------
       gen = tk.Frame(self, bg=_BG)
       gen.pack(fill=tk.X, padx=16, pady=(14, 4))
@@ -137,6 +138,11 @@ class SettingsDialog(tk.Toplevel):
          selectcolor=_ENTRY_BG, highlightthickness=0, anchor=tk.W,
          cursor='hand2', font=_font(),
       ).pack(side=tk.LEFT)
+
+      tk.Frame(self, height=1, bg='#555555').pack(fill=tk.X, padx=16, pady=6)
+
+      # ---- Appearance ----------------------------------------------------
+      self._build_appearance(editor_font, repl_font, history_max)
 
       tk.Frame(self, height=1, bg='#555555').pack(fill=tk.X, padx=16, pady=6)
 
@@ -201,6 +207,88 @@ class SettingsDialog(tk.Toplevel):
                 padx=16, pady=4, cursor='hand2', font=_font(),
                 ).pack(side=tk.RIGHT)
 
+   # ---- appearance section ----------------------------------------------
+
+   def _build_appearance(self, editor_font, repl_font, history_max):
+      self._ed_family = tk.StringVar(value=editor_font.get('family', 'Courier New'))
+      self._ed_size   = tk.StringVar(value=str(editor_font.get('size', 10)))
+      self._rp_family = tk.StringVar(value=repl_font.get('family', 'Courier New'))
+      self._rp_size   = tk.StringVar(value=str(repl_font.get('size', 10)))
+      self._hist_var  = tk.StringVar(value=str(history_max))
+
+      # Preview fonts are reconfigured live as the user edits family/size.
+      self._ed_preview = _font(int(editor_font.get('size', 10)))
+      self._rp_preview = _font(int(repl_font.get('size', 10)))
+
+      self._font_row('Editor font', self._ed_family, self._ed_size,
+                     self._ed_preview)
+      self._font_row('REPL font', self._rp_family, self._rp_size,
+                     self._rp_preview)
+
+      hist = tk.Frame(self, bg=_BG)
+      hist.pack(fill=tk.X, padx=16, pady=(6, 0))
+      tk.Label(hist, text='REPL history', bg=_BG, fg=_FG, width=11, anchor=tk.W,
+               font=_font()).pack(side=tk.LEFT)
+      tk.Spinbox(hist, from_=10, to=100000, increment=50, width=8,
+                 textvariable=self._hist_var, justify=tk.RIGHT,
+                 bg=_ENTRY_BG, fg=_FG, relief=tk.FLAT, insertbackground=_FG,
+                 buttonbackground=_FIELD, font=_font()).pack(side=tk.LEFT)
+      tk.Label(hist, text='entries kept across sessions', bg=_BG, fg=_MUTED,
+               font=_font()).pack(side=tk.LEFT, padx=(8, 0))
+
+      # Initial preview render + live updates on edit.
+      self._refresh_preview(self._ed_family, self._ed_size, self._ed_preview)
+      self._refresh_preview(self._rp_family, self._rp_size, self._rp_preview)
+      for v in (self._ed_family, self._ed_size):
+         v.trace_add('write', lambda *a: self._refresh_preview(
+            self._ed_family, self._ed_size, self._ed_preview))
+      for v in (self._rp_family, self._rp_size):
+         v.trace_add('write', lambda *a: self._refresh_preview(
+            self._rp_family, self._rp_size, self._rp_preview))
+
+   def _font_row(self, label, fam_var, size_var, preview_font):
+      row = tk.Frame(self, bg=_BG)
+      row.pack(fill=tk.X, padx=16, pady=(4, 0))
+      tk.Label(row, text=label, bg=_BG, fg=_FG, width=11, anchor=tk.W,
+               font=_font()).grid(row=0, column=0, sticky=tk.W)
+      tk.Entry(row, textvariable=fam_var, bg=_ENTRY_BG, fg=_FG,
+               insertbackground=_FG, relief=tk.FLAT, font=_font(),
+               ).grid(row=0, column=1, sticky=tk.EW, padx=(0, 8))
+      tk.Label(row, text='Size', bg=_BG, fg=_MUTED, font=_font(),
+               ).grid(row=0, column=2, padx=(0, 4))
+      tk.Spinbox(row, from_=6, to=72, width=4, textvariable=size_var,
+                 justify=tk.RIGHT, bg=_ENTRY_BG, fg=_FG, relief=tk.FLAT,
+                 insertbackground=_FG, buttonbackground=_FIELD, font=_font(),
+                 ).grid(row=0, column=3)
+      tk.Label(row, text='(define (f x) (* x x))   ; preview 0123',
+               bg=_ENTRY_BG, fg='#9a9a9a', anchor=tk.W, font=preview_font,
+               padx=6, pady=2).grid(row=1, column=1, columnspan=3,
+                                    sticky=tk.EW, pady=(3, 0))
+      row.columnconfigure(1, weight=1)
+
+   def _refresh_preview(self, fam_var, size_var, preview_font):
+      fam = fam_var.get().strip() or 'Courier New'
+      try:
+         size = int(size_var.get())
+      except (TypeError, ValueError):
+         return
+      if 4 <= size <= 200:
+         try:
+            preview_font.configure(family=fam, size=size)
+         except tk.TclError:
+            pass
+
+   def _read_font(self, fam_var, size_var):
+      """Return {'family','size'} if valid, else None."""
+      fam = fam_var.get().strip() or 'Courier New'
+      try:
+         size = int(size_var.get())
+      except (TypeError, ValueError):
+         return None
+      if not (6 <= size <= 72):
+         return None
+      return {'family': fam, 'size': size}
+
    # ---- scrolling helpers ------------------------------------------------
 
    def _on_wheel(self, event):
@@ -254,8 +342,29 @@ class SettingsDialog(tk.Toplevel):
             c['id'] = _fresh_id(seen)
          seen.add(c['id'])
 
+      editor_font = self._read_font(self._ed_family, self._ed_size)
+      repl_font   = self._read_font(self._rp_family, self._rp_size)
+      if editor_font is None or repl_font is None:
+         self._err.configure(
+            text='Font size must be a whole number from 6 to 72.')
+         return
+      try:
+         history_max = int(self._hist_var.get())
+      except (TypeError, ValueError):
+         history_max = None
+      if history_max is None or not (10 <= history_max <= 100000):
+         self._err.configure(
+            text='REPL history must be a whole number from 10 to 100000.')
+         return
+
       self._unbind_wheel()
-      self._on_save(cfgs, bool(self._dev_var.get()))
+      self._on_save({
+         'interpreters':   cfgs,
+         'developer_mode': bool(self._dev_var.get()),
+         'editor_font':    editor_font,
+         'repl_font':      repl_font,
+         'history_max':    history_max,
+      })
       self.destroy()
 
    def _cancel(self):

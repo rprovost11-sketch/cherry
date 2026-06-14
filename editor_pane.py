@@ -12,7 +12,8 @@ TAG_PAREN = 'paren_match'
 
 
 class EditorPane(tk.Frame):
-   def __init__(self, parent, on_run, **kwargs):
+   def __init__(self, parent, on_run, font_family='Courier New', font_size=10,
+                **kwargs):
       super().__init__(parent, **kwargs)
       self._on_run      = on_run      # callable(source_str)
       self._filepath    = None        # currently open file path
@@ -20,7 +21,14 @@ class EditorPane(tk.Frame):
       self._state_path  = None        # set by restore_state / save_state
       self._autosave_id = None        # pending after() id
 
+      # Owned here so set_font can restyle the live editor widget.
+      self._font = tkfont.Font(family=font_family, size=font_size)
+
       self._build()
+
+   def set_font(self, family, size):
+      """Restyle the editor text live."""
+      self._font.configure(family=family, size=size)
 
    # ---- construction -----------------------------------------------------
 
@@ -56,13 +64,12 @@ class EditorPane(tk.Frame):
                anchor=tk.W).pack(side=tk.LEFT, padx=12)
 
    def _build_editor(self):
-      mono = tkfont.Font(family='Courier New', size=10)
       frame = tk.Frame(self)
       frame.pack(fill=tk.BOTH, expand=True)
 
       self._text = tk.Text(
          frame,
-         font=mono,
+         font=self._font,
          wrap=tk.NONE,
          undo=True,
          bg='#1e1e1e',
