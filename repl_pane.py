@@ -788,21 +788,20 @@ class ReplPane(tk.Frame):
       t.tag_add(TAG_PAREN, match_tk, match_tk + '+1c')
 
    def _extract_expr_at_cursor(self):
-      """Return the full expression block the cursor is sitting on,
-      with prompt prefixes stripped.  Returns '' if the cursor is not
-      on an expression line (e.g. output, result, or error line)."""
+      """Return the full expression block the cursor is sitting in, with prompt
+      prefixes stripped.  The caret can be anywhere inside the block -- on the
+      >>> line, a ... continuation, or one of the command's output/result lines
+      -- and we scan up to the >>> line that opens it.  Returns '' only if there
+      is no >>> line at or above the cursor."""
       cursor_line = int(self._text.index(tk.INSERT).split('.')[0])
 
-      # Walk backwards to the >>> line that opens this block
+      # Scan up to the nearest >>> line at or above the cursor.
       ln = cursor_line
       while ln >= 1:
          content = self._text.get(str(ln) + '.0', str(ln) + '.end')
          if content.startswith(PROMPT):
             break
-         if content.startswith(CONT_PROMPT):
-            ln -= 1
-            continue
-         return ''   # cursor is on a non-expression line
+         ln -= 1
       if ln < 1:
          return ''
 
