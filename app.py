@@ -15,6 +15,9 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, font as tkfont
 
+_CHERRY_VERSION = '0.2.0'
+_TITLE_PREFIX   = 'Cherry v' + _CHERRY_VERSION + ' - '
+
 _CHERRY_DIR = pathlib.Path.home() / '.cherry'
 
 def _state_path(key):
@@ -188,7 +191,7 @@ class CherryApp(tk.Tk):
       self._current_interp = cur
 
       cfg = self._current_cfg()
-      self.title('cherry - ' + cfg['label'])
+      self.title(_TITLE_PREFIX + cfg['label'])
       self.configure(bg='#1e1e1e')
 
       # Restore the window's saved size + screen position (sash is restored in
@@ -414,7 +417,7 @@ class CherryApp(tk.Tk):
       self._cwd_var.set(cfg.get('cwd') or os.getcwd())
       self._repl.set_bridge(new_bridge)
       self._editor.restore_state(_state_path(iid))
-      self.title('cherry - ' + cfg['label'])
+      self.title(_TITLE_PREFIX + cfg['label'])
       self._interp_var.set(cfg['label'])
       self._settings['last_interp_id'] = iid
       _save_settings(self._settings)
@@ -472,9 +475,9 @@ class CherryApp(tk.Tk):
       elif cur.get('cmd') != old_cmd or (cur.get('cwd') or '') != old_cwd:
          # Its launch command/dir changed -- restart so the edits take effect.
          self._restart_current()
-         self.title('cherry - ' + cur['label'])
+         self.title(_TITLE_PREFIX + cur['label'])
       else:
-         self.title('cherry - ' + cur['label'])
+         self.title(_TITLE_PREFIX + cur['label'])
 
       self._rebuild_interp_menu()
       _save_settings(self._settings)
@@ -502,7 +505,7 @@ class CherryApp(tk.Tk):
       self._cwd_var.set(cfg.get('cwd') or os.getcwd())
       self._repl.set_bridge(new_bridge)
       self._editor.restore_state(_state_path(cfg['id']))
-      self.title('cherry - ' + cfg['label'])
+      self.title(_TITLE_PREFIX + cfg['label'])
       self._settings['last_interp_id'] = cfg['id']
 
    def _save_suite_selection(self, config):
