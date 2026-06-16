@@ -172,6 +172,15 @@ class CherryApp(tk.Tk):
          _save_settings(self._settings)
       self._interpreters = interps
 
+      # Global scheme-tests directory (applied via ]scheme-tests; see
+      # _init_commands).  Seed it once to the repo's conventional location if
+      # that exists -- a user-editable default, like the seeded interpreters,
+      # not a baked-in constant.  Absent stays absent so tests prompt for setup.
+      if 'scheme_tests_dir' not in self._settings:
+         seed_tests = _LISP_DIR / 'scheme-tests'
+         self._settings['scheme_tests_dir'] = str(seed_tests) if seed_tests.is_dir() else ''
+         _save_settings(self._settings)
+
       # Restore the last-used interpreter; fall back to the seed default ('4')
       # if present, else the first in the list.
       cur = self._settings.get('last_interp_id')
@@ -195,7 +204,8 @@ class CherryApp(tk.Tk):
                                             _DEFAULT_REPL_SIZE)
 
       self._bridge = SubprocessBridge(cmd=self._cmd_list(cfg),
-                                      cwd=cfg.get('cwd') or None)
+                                      cwd=cfg.get('cwd') or None,
+                                      init_commands=self._init_commands())
       self._build()
       self._repl.set_test_tools_visible(self._developer_mode)
       self._editor.restore_state(_state_path(self._current_interp))
@@ -216,6 +226,18 @@ class CherryApp(tk.Tk):
 
    def _cmd_list(self, cfg):
       return _parse_cmdline(cfg.get('cmd'))
+
+   def _init_commands(self):
+      """Listener lines Cherry injects after each (re)spawn for configuration
+      that can't ride argv.  Currently the global scheme-tests directory, applied
+      with ]scheme-tests -- which by the interpreter's own rules overrides a
+      -T/--scheme-tests option and $SCHEME_TESTS_DIR.  Cherry never touches the
+      command line; interpreters that don't know the command ignore it."""
+      cmds = []
+      tdir = (self._settings.get('scheme_tests_dir') or '').strip()
+      if tdir:
+         cmds.append(']scheme-tests ' + tdir)
+      return cmds
 
    def _build(self):
       # ---- interpreter selector bar ----
@@ -398,7 +420,8 @@ class CherryApp(tk.Tk):
       self._editor.save_state(_state_path(self._current_interp))
       self._bridge.shutdown()
       new_bridge = SubprocessBridge(cmd=self._cmd_list(cfg),
-                                    cwd=cfg.get('cwd') or None)
+                                    cwd=cfg.get('cwd') or None,
+                                    init_commands=self._init_commands())
       self._bridge = new_bridge
       self._current_interp = iid
       self._cwd_var.set(cfg.get('cwd') or os.getcwd())
@@ -417,6 +440,7 @@ class CherryApp(tk.Tk):
                      developer_mode=self._developer_mode,
                      editor_font=dict(self._editor_font_cfg),
                      repl_font=dict(self._repl_font_cfg),
+                     scheme_tests_dir=self._settings.get('scheme_tests_dir', ''),
                      on_save=self._apply_settings)
 
    def _apply_settings(self, result):
@@ -429,12 +453,16 @@ class CherryApp(tk.Tk):
       old = self._interp_by_id(self._current_interp)
       old_cmd = old.get('cmd') if old else None
       old_cwd = (old.get('cwd') or '') if old else ''
+      old_tdir = (self._settings.get('scheme_tests_dir') or '').strip()
 
       # Canonicalize (drop any stale fields, dedupe ids) before storing so the
       # saved file always matches the current schema.
       new_interpreters = _normalize_interpreters(new_interpreters) or new_interpreters
       self._interpreters = new_interpreters
       self._settings['interpreters'] = new_interpreters
+
+      new_tdir = (result.get('scheme_tests_dir') or '').strip()
+      self._settings['scheme_tests_dir'] = new_tdir
 
       if developer_mode != self._developer_mode:
          self._developer_mode = developer_mode
@@ -455,21 +483,72 @@ class CherryApp(tk.Tk):
       if cur is None:
          # The active interpreter was removed -- fall back to the first one.
          self._fallback_to_first()
-      elif cur.get('cmd') != old_cmd or (cur.get('cwd') or '') != old_cwd:
-         # Its launch command/dir changed -- restart so the edits take effect.
-         self._restart_current()
-         self.title(_TITLE_PREFIX + cur['label'])
       else:
+         new_cwd = cur.get('cwd') or ''
+         cwd_changed = new_cwd != old_cwd
+         # A command-line change needs a fresh process; so does a spaced cwd,
+         # since ]cd takes a single token (Popen's cwd handles spaces).  Both
+         # respawn paths re-apply the cwd and scheme-tests dir on boot.
+         if cur.get('cmd') != old_cmd or (cwd_changed and ' ' in new_cwd):
+            self._restart_current()
+         else:
+            # Apply launch-affecting changes in place via listener commands so
+            # the live REPL session (in-memory definitions) is preserved.
+            if cwd_changed:
+               self._apply_cwd_live(new_cwd)
+            if new_tdir != old_tdir:
+               self._apply_scheme_tests_live(new_tdir)
          self.title(_TITLE_PREFIX + cur['label'])
 
+      # Keep the bridge's replay list current for any future respawn.
+      self._bridge.set_init_commands(self._init_commands())
       self._rebuild_interp_menu()
       _save_settings(self._settings)
+      self._warn_scheme_tests_override(new_tdir, new_tdir != old_tdir)
+
+   def _apply_cwd_live(self, cwd):
+      """Apply a changed working directory to the running interpreter via ]cd,
+      without a restart, and keep it for future respawns.  (Callers route a
+      spaced path through a restart instead, since ]cd takes a single token.)"""
+      self._bridge.set_cwd(cwd or None)
+      if cwd:
+         self._bridge.chdir(cwd)
+         self._cwd_var.set(cwd)
+
+   def _apply_scheme_tests_live(self, tdir):
+      """Apply a changed scheme-tests directory to the running interpreter via
+      ]scheme-tests, no restart.  The echo is left visible as confirmation.  A
+      cleared value can't be unset live -- it takes effect on the next respawn
+      (the replay list, updated by the caller, drops it)."""
+      if tdir:
+         self._bridge.submit(']scheme-tests ' + tdir)
+
+   def _warn_scheme_tests_override(self, tdir, changed):
+      """Warn only on a real conflict: the global scheme-tests dir is set AND
+      some interpreter's command line also carries -T/--scheme-tests, which the
+      Settings value (applied via ]scheme-tests) overrides.  Fires only when the
+      dir was just changed, so it never nags."""
+      if not tdir or not changed:
+         return
+      clashing = [it['label'] for it in self._interpreters
+                  if any(a == '-T' or a.startswith('--scheme-tests')
+                         for a in self._cmd_list(it))]
+      if not clashing:
+         return
+      from tkinter import messagebox
+      messagebox.showinfo(
+         'Scheme-tests directory',
+         'The Scheme-tests directory set in Settings is applied with '
+         ']scheme-tests, which overrides any -T/--scheme-tests path on a '
+         'command line.\n\nIt takes precedence for:\n  ' + '\n  '.join(clashing),
+         parent=self)
 
    def _restart_current(self):
       cfg = self._current_cfg()
       self._bridge.shutdown()
       new_bridge = SubprocessBridge(cmd=self._cmd_list(cfg),
-                                    cwd=cfg.get('cwd') or None)
+                                    cwd=cfg.get('cwd') or None,
+                                    init_commands=self._init_commands())
       self._bridge = new_bridge
       self._cwd_var.set(cfg.get('cwd') or os.getcwd())
       self._repl.set_bridge(new_bridge)
@@ -482,7 +561,8 @@ class CherryApp(tk.Tk):
    def _restart_current_to(self, cfg):
       self._bridge.shutdown()
       new_bridge = SubprocessBridge(cmd=self._cmd_list(cfg),
-                                    cwd=cfg.get('cwd') or None)
+                                    cwd=cfg.get('cwd') or None,
+                                    init_commands=self._init_commands())
       self._bridge = new_bridge
       self._current_interp = cfg['id']
       self._cwd_var.set(cfg.get('cwd') or os.getcwd())

@@ -102,7 +102,7 @@ class SettingsDialog(tk.Toplevel):
    dev-mode flag; on Save it calls on_save(new_interpreters, developer_mode)."""
 
    def __init__(self, parent, interpreters, developer_mode,
-                editor_font, repl_font, on_save):
+                editor_font, repl_font, on_save, scheme_tests_dir=''):
       super().__init__(parent)
       self._on_save = on_save
       self._rows    = []
@@ -114,6 +114,7 @@ class SettingsDialog(tk.Toplevel):
       self.geometry('660x680')
 
       self._dev_var = tk.BooleanVar(value=bool(developer_mode))
+      self._scheme_tests_var = tk.StringVar(value=str(scheme_tests_dir or ''))
       self._build(interpreters, editor_font, repl_font)
 
       self.update_idletasks()
@@ -138,6 +139,27 @@ class SettingsDialog(tk.Toplevel):
          selectcolor=_ENTRY_BG, highlightthickness=0, anchor=tk.W,
          cursor='hand2', font=_font(),
       ).pack(side=tk.LEFT)
+
+      # ---- Scheme-tests directory (global; used by the Scheme ports) -----
+      st = tk.Frame(self, bg=_BG)
+      st.pack(fill=tk.X, padx=16, pady=(8, 0))
+      tk.Label(st, text='Scheme-tests dir', bg=_BG, fg=_FG, anchor=tk.W,
+               font=_font()).grid(row=0, column=0, sticky=tk.W, padx=(0, 8))
+      tk.Entry(st, textvariable=self._scheme_tests_var, bg=_ENTRY_BG, fg=_FG,
+               insertbackground=_FG, relief=tk.FLAT, font=_font(),
+               ).grid(row=0, column=1, sticky=tk.EW)
+      tk.Button(st, text='...', command=self._browse_scheme_tests,
+                bg=_FIELD, fg=_FG, activebackground='#505050',
+                activeforeground='#ffffff', relief=tk.FLAT, padx=6,
+                cursor='hand2', font=_font(),
+                ).grid(row=0, column=2, sticky=tk.E, padx=(6, 0))
+      st.columnconfigure(1, weight=1)
+      tk.Label(self,
+               text='Applied via ]scheme-tests after launch -- takes precedence '
+                    'over any -T/--scheme-tests on a command line.  Used by '
+                    'PyScheme / CPPScheme2.',
+               bg=_BG, fg=_MUTED, anchor=tk.W, justify=tk.LEFT, font=_font(),
+               ).pack(fill=tk.X, padx=16, pady=(2, 0))
 
       tk.Frame(self, height=1, bg='#555555').pack(fill=tk.X, padx=16, pady=6)
 
@@ -331,6 +353,14 @@ class SettingsDialog(tk.Toplevel):
       self.update_idletasks()
       self._canvas.configure(scrollregion=self._canvas.bbox('all'))
 
+   def _browse_scheme_tests(self):
+      cur  = self._scheme_tests_var.get().strip()
+      init = cur if os.path.isdir(cur) else os.getcwd()
+      path = filedialog.askdirectory(title='Choose the scheme-tests directory',
+                                     initialdir=init, parent=self)
+      if path:
+         self._scheme_tests_var.set(path)
+
    # ---- row management ---------------------------------------------------
 
    def _used_ids(self):
@@ -382,6 +412,7 @@ class SettingsDialog(tk.Toplevel):
          'developer_mode': bool(self._dev_var.get()),
          'editor_font':    editor_font,
          'repl_font':      repl_font,
+         'scheme_tests_dir': self._scheme_tests_var.get().strip(),
       })
       self.destroy()
 
