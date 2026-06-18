@@ -13,7 +13,7 @@ import re
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import filedialog, font as tkfont
+from tkinter import filedialog, font as tkfont, messagebox
 
 from pyscheme.Utils         import paren_state
 from pyscheme.Listener      import Listener
@@ -22,6 +22,9 @@ from cherry.parens import make_code_map, find_match
 PROMPT        = '>>> '
 CONT_PROMPT   = '... '
 DEBUG_PROMPT  = 'debug> '
+
+# Shell used to drive scheme-tests/run-tests.sh for the "Arsenal..." dialog.
+_BASH = 'bash'
 
 TAG_PROMPT = 'prompt'
 TAG_OUTPUT = 'output'
@@ -107,6 +110,7 @@ def _parse_ansi(text, base_tag):
 class ReplPane(tk.Frame):
    def __init__(self, parent, bridge, get_cwd=None, get_interp_cmd=None,
                 get_suite_selection=None, save_suite_selection=None,
+                get_scheme_tests_dir=None,
                 font_family='Courier New', font_size=10, **kwargs):
       super().__init__(parent, **kwargs)
       self._bridge             = bridge
@@ -114,6 +118,7 @@ class ReplPane(tk.Frame):
       self._get_interp_cmd     = get_interp_cmd      # () -> current interpreter cmd list
       self._get_suite_selection  = get_suite_selection   # () -> {name: bool}
       self._save_suite_selection = save_suite_selection  # (dict) -> persist
+      self._get_scheme_tests_dir = get_scheme_tests_dir  # () -> scheme-tests root
       self._lines      = []
       self._busy       = False
       self._debug_mode = False
@@ -173,6 +178,10 @@ class ReplPane(tk.Frame):
       suites_cfg.update(bg='#1f4e2b', activebackground='#2f6e3b')
       tk.Button(self._test_bar, text='Test Suites...',
                 command=self._cmd_test_suites, **suites_cfg).pack(side=tk.LEFT, padx=2)
+      arsenal_cfg = dict(btn)
+      arsenal_cfg.update(bg='#1f5e4e', activebackground='#2f7e6b')
+      tk.Button(self._test_bar, text='Arsenal...',
+                command=self._cmd_test_arsenal, **arsenal_cfg).pack(side=tk.LEFT, padx=2)
       # Undercarriage tests = cppscheme2's C++ gc_test binary; only meaningful
       # for cppscheme2 (the other interpreters have no custom GC / no such exe),
       # so the button is enabled only while cppscheme2 is the active interpreter.
@@ -548,6 +557,110 @@ class ReplPane(tk.Frame):
       except OSError as e:
          q.put(('error', 'Undercarriage tests: %s' % e))
       q.put(('ready',))
+
+   def _cmd_test_arsenal(self):
+      # The full test arsenal -- the .log battery PLUS the external harnesses
+      # (cross-port diff, fuzzer, the metamorphic property tests, gc_test) -- is
+      # registered in scheme-tests/tests.manifest.  We list it via
+      # run-tests.sh --list-detail and run the checked tests with one ]tests
+      # command (which delegates to the same orchestrator).  Adding a test to the
+      # manifest makes it appear here automatically -- the registry is the single
+      # source of truth, so Cherry never hardcodes the list.
+      if self._busy:
+         return
+      tdir = ''
+      if self._get_scheme_tests_dir:
+         try:
+            tdir = (self._get_scheme_tests_dir() or '').strip()
+         except Exception:
+            tdir = ''
+      script = os.path.join(tdir, 'run-tests.sh') if tdir else ''
+      if not script or not os.path.isfile(script):
+         messagebox.showinfo(
+            'Test arsenal',
+            'Set the Scheme-tests directory first (Settings) so Cherry can find '
+            'run-tests.sh.')
+         return
+      try:
+         res = subprocess.run([_BASH, script, '--list-detail'],
+                              capture_output=True, text=True, timeout=30)
+         listing = res.stdout
+      except FileNotFoundError:
+         messagebox.showerror(
+            'Test arsenal',
+            'Could not run run-tests.sh -- a POSIX shell ("bash"/git-bash) is '
+            'required on PATH.')
+         return
+      except Exception as e:
+         messagebox.showerror('Test arsenal', 'Could not list tests:\n' + str(e))
+         return
+      tests = []
+      for line in listing.splitlines():
+         parts = line.split('\t')
+         if len(parts) >= 3 and parts[0]:
+            tests.append((parts[0], parts[1], parts[2]))
+      if not tests:
+         messagebox.showinfo('Test arsenal',
+                             'No tests found in the registry (tests.manifest).')
+         return
+
+      parent = self.winfo_toplevel()
+      dlg = tk.Toplevel(parent)
+      dlg.title('Run test arsenal')
+      dlg.resizable(False, False)
+      dlg.configure(bg='#2d2d2d')
+      dlg.transient(parent)
+
+      tk.Label(dlg, text='Run these tests (from tests.manifest):',
+               bg='#2d2d2d', fg='#d4d4d4', padx=24,
+               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(16, 8))
+
+      checks = []
+      box = tk.Frame(dlg, bg='#2d2d2d')
+      box.pack(fill=tk.X, padx=28)
+      for (name, kind, ports) in tests:
+         v = tk.BooleanVar(value=True)
+         checks.append((name, v))
+         tk.Checkbutton(box, text='%-22s  (%s, %s)' % (name, kind, ports),
+                        variable=v, bg='#2d2d2d', fg='#d4d4d4',
+                        activebackground='#2d2d2d', activeforeground='#ffffff',
+                        selectcolor='#1e1e1e', highlightthickness=0,
+                        anchor=tk.W, padx=4, cursor='hand2',
+                        font=self._font).pack(fill=tk.X, anchor=tk.W)
+
+      tk.Label(dlg,
+               text='Runs via ]tests on the active interpreter.  Known-open bugs\n'
+                    'are reported as "xfail" (expected) and do not fail the run.',
+               bg='#2d2d2d', fg='#888888', padx=24,
+               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(8, 6))
+
+      btn_row = tk.Frame(dlg, bg='#2d2d2d')
+      btn_row.pack(pady=(4, 14))
+
+      def _do_run():
+         selected = [name for (name, v) in checks if v.get()]
+         dlg.destroy()
+         if selected:
+            self.inject_source(']tests ' + ' '.join(selected))
+
+      tk.Button(btn_row, text='Run', command=_do_run,
+                bg='#1f4e6b', fg='#d4d4d4',
+                activebackground='#2f6e8b', activeforeground='#ffffff',
+                relief=tk.FLAT, padx=14, pady=4, cursor='hand2',
+                ).pack(side=tk.LEFT, padx=6)
+      tk.Button(btn_row, text='Cancel', command=dlg.destroy,
+                bg='#3c3c3c', fg='#d4d4d4',
+                activebackground='#505050', activeforeground='#ffffff',
+                relief=tk.FLAT, padx=14, pady=4, cursor='hand2',
+                ).pack(side=tk.LEFT, padx=6)
+
+      dlg.update_idletasks()
+      w = dlg.winfo_width()
+      h = dlg.winfo_height()
+      x = parent.winfo_x() + (parent.winfo_width() - w) // 2
+      y = parent.winfo_y() + (parent.winfo_height() - h) // 2
+      dlg.geometry('+' + str(x) + '+' + str(y))
+      dlg.grab_set()
 
    def _cmd_test_suites(self):
       if self._busy:

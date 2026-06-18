@@ -323,6 +323,7 @@ class CherryApp(tk.Tk):
                               get_interp_cmd=lambda: self._cmd_list(self._current_cfg()),
                               get_suite_selection=lambda: self._settings.get('suite_selection', {}),
                               save_suite_selection=self._save_suite_selection,
+                              get_scheme_tests_dir=lambda: self._settings.get('scheme_tests_dir', ''),
                               font_family=self._repl_font_cfg['family'],
                               font_size=self._repl_font_cfg['size'],
                               bg='#1e1e1e')
