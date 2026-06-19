@@ -119,6 +119,9 @@ class ReplPane(tk.Frame):
       self._lines      = []
       self._busy       = False
       self._debug_mode = False
+      # Commands queued to run one-after-another (each submitted when the
+      # previous finishes).  Used to wrap a suite run with ]gc-stress on/off.
+      self._pending_cmds = []
       self._show_test_tools = True   # set False (or via set_test_tools_visible) for a release build
 
       # The REPL font is owned here (not a per-call literal) so set_font can
@@ -175,17 +178,9 @@ class ReplPane(tk.Frame):
       suites_cfg.update(bg='#1f4e2b', activebackground='#2f6e3b')
       tk.Button(self._test_bar, text='Test Suites...',
                 command=self._cmd_test_suites, **suites_cfg).pack(side=tk.LEFT, padx=2)
-      # Undercarriage tests = cppscheme2's C++ gc_test binary; only meaningful
-      # for cppscheme2 (the other interpreters have no custom GC / no such exe),
-      # so the button is enabled only while cppscheme2 is the active interpreter.
-      under_cfg = dict(btn)
-      under_cfg.update(bg='#3a2f5a', activebackground='#4a3f6e',
-                       disabledforeground='#666666')
-      self._undercarriage_btn = tk.Button(
-         self._test_bar, text='Undercarriage',
-         command=self._cmd_undercarriage, **under_cfg)
-      self._undercarriage_btn.pack(side=tk.LEFT, padx=2)
-      self._refresh_undercarriage_btn()
+      # (Undercarriage tests -- cppscheme2's gc_test exe -- are now reachable as
+      # the 'gc_test' suite in the registry, so they run from Test Suites... like
+      # everything else; the dedicated button was retired.)
 
       # ---- debug-mode button group (hidden until debugger is active) ---------
       self._debug_bar = tk.Frame(bar, bg='#2d2d2d')
@@ -312,10 +307,15 @@ class ReplPane(tk.Frame):
                self._set_busy(False)
                self._append('\n', TAG_OUTPUT)
                self._show_prompt()
+               # Chain a queued command sequence: submit the next one now that
+               # the previous has finished (e.g. ]gc-stress off after ]suites).
+               if self._pending_cmds and not self._debug_mode:
+                  self.inject_source(self._pending_cmds.pop(0))
             elif kind == 'exited':
                # The interpreter died (e.g. (exit)/]quit, or a crash).  Respawn
                # silently -- the fresh interpreter's boot banner is the signal.
                self._lines = []
+               self._pending_cmds = []   # a fresh interpreter has GC stress off
                if self._debug_mode:
                   self._debug_mode = False
                   self._swap_toolbar()
@@ -465,72 +465,25 @@ class ReplPane(tk.Frame):
       if path:
          self.inject_source(']feature ' + path)
 
-   # ---- Undercarriage tests (cppscheme2's C++ gc_test binary) ------------
-
-   def _undercarriage_exe(self):
-      """Path to cppscheme2's gc_test.exe when cppscheme2 is the active
-      interpreter, else None.  gc_test sits beside cppscheme2.exe in
-      build/Release.  Returns the path even if the file is missing (the click
-      handler reports that, with a build hint) -- the gate is the interpreter,
-      not whether the binary has been built."""
+   def _is_cppscheme2(self):
+      """True while cppScheme2 is the active interpreter (gates cpp-only options
+      like GC stress)."""
       if not self._get_interp_cmd:
-         return None
+         return False
       try:
          cmd = self._get_interp_cmd() or []
       except Exception:
-         return None
-      if not cmd or not any('cppscheme2' in str(p).lower() for p in cmd):
-         return None
-      return os.path.join(os.path.dirname(str(cmd[0])), 'gc_test.exe')
+         return False
+      return any('cppscheme2' in str(p).lower() for p in cmd)
 
-   def _refresh_undercarriage_btn(self):
-      """Enable the Undercarriage button only while cppscheme2 is active."""
-      btn = getattr(self, '_undercarriage_btn', None)
-      if btn is None:
+   def _inject_sequence(self, cmds):
+      """Run a list of commands one-after-another: submit the first now; _poll
+      submits each next one when the previous finishes (its 'ready' arrives)."""
+      cmds = [c for c in cmds if c]
+      if not cmds:
          return
-      state = tk.NORMAL if self._undercarriage_exe() else tk.DISABLED
-      btn.configure(state=state)
-
-   def _cmd_undercarriage(self):
-      if self._busy:
-         return
-      exe = self._undercarriage_exe()
-      if exe is None:
-         return  # not cppscheme2 -- the button is disabled anyway
-      self._append('\n', TAG_OUTPUT)
-      if not os.path.isfile(exe):
-         self._append('Undercarriage tests: gc_test.exe not found at\n  ' + exe
-                      + '\nBuild it:  cmake --build build --config Release '
-                        '--target gc_test\n', TAG_ERROR)
-         self._show_prompt()
-         return
-      self._append('Running undercarriage tests (gc_test)...\n', TAG_BANNER)
-      self._set_busy(True)
-      bridge = self._bridge   # results flow through its queue, drained by _poll
-      threading.Thread(target=self._undercarriage_worker,
-                       args=(exe, bridge), daemon=True).start()
-
-   def _undercarriage_worker(self, exe, bridge):
-      """Run gc_test.exe to completion in a background thread, streaming its
-      output into the REPL via the bridge's result_queue (drained by _poll on the
-      main thread).  A final 'ready' restores the prompt and clears the busy
-      state -- the same path a normal evaluation takes."""
-      q = bridge.result_queue
-      try:
-         proc = subprocess.Popen(
-            [exe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            cwd=os.path.dirname(exe), text=True, bufsize=1)
-         for line in proc.stdout:
-            q.put(('output', line))
-         proc.wait()
-         if proc.returncode == 0:
-            q.put(('output', 'Undercarriage tests PASSED.\n'))
-         else:
-            q.put(('error', 'Undercarriage tests FAILED (exit %d).'
-                   % proc.returncode))
-      except OSError as e:
-         q.put(('error', 'Undercarriage tests: %s' % e))
-      q.put(('ready',))
+      self._pending_cmds = list(cmds[1:])
+      self.inject_source(cmds[0])
 
    def _cmd_test_suites(self):
       # The whole arsenal -- the .log batteries, the SRFI-64 property suites, and
@@ -590,11 +543,26 @@ class ReplPane(tk.Frame):
                      selectcolor='#1e1e1e', highlightthickness=0,
                      anchor=tk.W, padx=24, cursor='hand2').pack(fill=tk.X, pady=(8, 0))
 
+      # ]gc-stress is cppScheme2-only (the other interpreters have no custom GC);
+      # disable the option for them.
+      gc_ok = self._is_cppscheme2()
+      gc_var = tk.BooleanVar(value=False)
+      tk.Checkbutton(dlg,
+                     text='Run under GC stress (]gc-stress on before, off after)',
+                     variable=gc_var, bg='#2d2d2d', fg='#d4d4d4',
+                     activebackground='#2d2d2d', activeforeground='#ffffff',
+                     selectcolor='#1e1e1e', highlightthickness=0,
+                     disabledforeground='#666666',
+                     state=(tk.NORMAL if gc_ok else tk.DISABLED),
+                     anchor=tk.W, padx=24, cursor='hand2').pack(fill=tk.X)
+
       tk.Label(dlg,
                text='Runs via ]suites on the active interpreter.  Known-open bugs\n'
                     'report as XFAIL (expected) and do not fail the run.  -slow runs\n'
                     "each suite's slow variant where it has one (e.g. compliance's\n"
-                    'cppScheme2 GC soak), the base run otherwise.',
+                    'cppScheme2 GC soak), the base run otherwise.  GC stress slashes\n'
+                    'the collector thresholds so it fires constantly -- slower but far\n'
+                    'more thorough (cppScheme2 only).',
                bg='#2d2d2d', fg='#888888', padx=24,
                anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(6, 6))
 
@@ -606,9 +574,16 @@ class ReplPane(tk.Frame):
          if self._save_suite_selection:
             self._save_suite_selection({n: bool(checks[n].get()) for n in order})
          dlg.destroy()
-         if selected:
-            suffix = '-slow' if slow_var.get() else ''
-            self.inject_source(']suites ' + ' '.join(n + suffix for n in selected))
+         if not selected:
+            return
+         suffix = '-slow' if slow_var.get() else ''
+         suite_cmd = ']suites ' + ' '.join(n + suffix for n in selected)
+         if gc_ok and gc_var.get():
+            # Toggle GC stress around the run: on before, off after.  Each
+            # command runs only when the previous finishes (see _poll/ready).
+            self._inject_sequence([']gc-stress on', suite_cmd, ']gc-stress off'])
+         else:
+            self.inject_source(suite_cmd)
 
       tk.Button(btn_row, text='Run', command=_do_run,
                 bg='#1f4e6b', fg='#d4d4d4',
@@ -885,12 +860,12 @@ class ReplPane(tk.Frame):
       """Replace the underlying bridge (called when switching interpreters)."""
       self._bridge = bridge
       self._lines = []
+      self._pending_cmds = []
       if self._debug_mode:
          self._debug_mode = False
          self._swap_toolbar()
       self._set_busy(False)
       self._text.delete('1.0', tk.END)
-      self._refresh_undercarriage_btn()
 
    def inject_source(self, source):
       """Submit source as if typed at the prompt (called by editor Run button)."""
