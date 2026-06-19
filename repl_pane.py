@@ -23,9 +23,6 @@ PROMPT        = '>>> '
 CONT_PROMPT   = '... '
 DEBUG_PROMPT  = 'debug> '
 
-# Shell used to drive scheme-tests/run-tests.sh for the "Arsenal..." dialog.
-_BASH = 'bash'
-
 TAG_PROMPT = 'prompt'
 TAG_OUTPUT = 'output'
 TAG_RESULT = 'result'
@@ -178,10 +175,6 @@ class ReplPane(tk.Frame):
       suites_cfg.update(bg='#1f4e2b', activebackground='#2f6e3b')
       tk.Button(self._test_bar, text='Test Suites...',
                 command=self._cmd_test_suites, **suites_cfg).pack(side=tk.LEFT, padx=2)
-      arsenal_cfg = dict(btn)
-      arsenal_cfg.update(bg='#1f5e4e', activebackground='#2f7e6b')
-      tk.Button(self._test_bar, text='Arsenal...',
-                command=self._cmd_test_arsenal, **arsenal_cfg).pack(side=tk.LEFT, padx=2)
       # Undercarriage tests = cppscheme2's C++ gc_test binary; only meaningful
       # for cppscheme2 (the other interpreters have no custom GC / no such exe),
       # so the button is enabled only while cppscheme2 is the active interpreter.
@@ -472,25 +465,6 @@ class ReplPane(tk.Frame):
       if path:
          self.inject_source(']feature ' + path)
 
-   # ---- Test Suites... dialog + sequencer --------------------------------
-
-   _SUITE_ORDER = ('Feature', 'Compliance (quick)',
-                   'Compliance (slow)', 'Regressions')
-
-   def _slow_compliance_applicable(self):
-      # 'Compliance (slow)' is a high-N memory soak whose real payoff is
-      # stressing cppscheme2's custom generational GC.  pyScheme (and the older
-      # interpreters) have no custom GC -- and bounded-space TCO is already
-      # proven at small N by 3.05's %continuation-depth checks, which run in the
-      # quick suite too -- so the slow run only makes sense for cppscheme2.
-      if not self._get_interp_cmd:
-         return False
-      try:
-         cmd = self._get_interp_cmd() or []
-      except Exception:
-         return False
-      return any('cppscheme2' in str(p).lower() for p in cmd)
-
    # ---- Undercarriage tests (cppscheme2's C++ gc_test binary) ------------
 
    def _undercarriage_exe(self):
@@ -558,128 +532,23 @@ class ReplPane(tk.Frame):
          q.put(('error', 'Undercarriage tests: %s' % e))
       q.put(('ready',))
 
-   def _cmd_test_arsenal(self):
-      # The full test arsenal -- the .log battery PLUS the external harnesses
-      # (cross-port diff, fuzzer, the metamorphic property tests, gc_test) -- is
-      # registered in scheme-tests/tests.manifest.  We list it via
-      # run-tests.sh --list-detail and run the checked tests with one ]tests
-      # command (which delegates to the same orchestrator).  Adding a test to the
-      # manifest makes it appear here automatically -- the registry is the single
-      # source of truth, so Cherry never hardcodes the list.
-      if self._busy:
-         return
-      tdir = ''
-      if self._get_scheme_tests_dir:
-         try:
-            tdir = (self._get_scheme_tests_dir() or '').strip()
-         except Exception:
-            tdir = ''
-      script = os.path.join(tdir, 'run-tests.sh') if tdir else ''
-      if not script or not os.path.isfile(script):
-         messagebox.showinfo(
-            'Test arsenal',
-            'Set the Scheme-tests directory first (Settings) so Cherry can find '
-            'run-tests.sh.')
-         return
-      try:
-         res = subprocess.run([_BASH, script, '--list-detail'],
-                              capture_output=True, text=True, timeout=30)
-         listing = res.stdout
-      except FileNotFoundError:
-         messagebox.showerror(
-            'Test arsenal',
-            'Could not run run-tests.sh -- a POSIX shell ("bash"/git-bash) is '
-            'required on PATH.')
-         return
-      except Exception as e:
-         messagebox.showerror('Test arsenal', 'Could not list tests:\n' + str(e))
-         return
-      tests = []
-      for line in listing.splitlines():
-         parts = line.split('\t')
-         if len(parts) >= 3 and parts[0]:
-            tests.append((parts[0], parts[1], parts[2]))
-      if not tests:
-         messagebox.showinfo('Test arsenal',
-                             'No tests found in the registry (tests.manifest).')
-         return
-
-      parent = self.winfo_toplevel()
-      dlg = tk.Toplevel(parent)
-      dlg.title('Run test arsenal')
-      dlg.resizable(False, False)
-      dlg.configure(bg='#2d2d2d')
-      dlg.transient(parent)
-
-      tk.Label(dlg, text='Run these tests (from tests.manifest):',
-               bg='#2d2d2d', fg='#d4d4d4', padx=24,
-               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(16, 8))
-
-      checks = []
-      box = tk.Frame(dlg, bg='#2d2d2d')
-      box.pack(fill=tk.X, padx=28)
-      for (name, kind, ports) in tests:
-         v = tk.BooleanVar(value=True)
-         checks.append((name, v))
-         tk.Checkbutton(box, text='%-22s  (%s, %s)' % (name, kind, ports),
-                        variable=v, bg='#2d2d2d', fg='#d4d4d4',
-                        activebackground='#2d2d2d', activeforeground='#ffffff',
-                        selectcolor='#1e1e1e', highlightthickness=0,
-                        anchor=tk.W, padx=4, cursor='hand2',
-                        font=self._font).pack(fill=tk.X, anchor=tk.W)
-
-      tk.Label(dlg,
-               text='Runs via ]tests on the active interpreter.  Known-open bugs\n'
-                    'are reported as "xfail" (expected) and do not fail the run.',
-               bg='#2d2d2d', fg='#888888', padx=24,
-               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(8, 6))
-
-      btn_row = tk.Frame(dlg, bg='#2d2d2d')
-      btn_row.pack(pady=(4, 14))
-
-      def _do_run():
-         selected = [name for (name, v) in checks if v.get()]
-         dlg.destroy()
-         if selected:
-            self.inject_source(']tests ' + ' '.join(selected))
-
-      tk.Button(btn_row, text='Run', command=_do_run,
-                bg='#1f4e6b', fg='#d4d4d4',
-                activebackground='#2f6e8b', activeforeground='#ffffff',
-                relief=tk.FLAT, padx=14, pady=4, cursor='hand2',
-                ).pack(side=tk.LEFT, padx=6)
-      tk.Button(btn_row, text='Cancel', command=dlg.destroy,
-                bg='#3c3c3c', fg='#d4d4d4',
-                activebackground='#505050', activeforeground='#ffffff',
-                relief=tk.FLAT, padx=14, pady=4, cursor='hand2',
-                ).pack(side=tk.LEFT, padx=6)
-
-      dlg.update_idletasks()
-      w = dlg.winfo_width()
-      h = dlg.winfo_height()
-      x = parent.winfo_x() + (parent.winfo_width() - w) // 2
-      y = parent.winfo_y() + (parent.winfo_height() - h) // 2
-      dlg.geometry('+' + str(x) + '+' + str(y))
-      dlg.grab_set()
-
    def _cmd_test_suites(self):
+      # The whole arsenal -- the .log batteries, the SRFI-64 property suites, and
+      # the external tools (gc_test, the differential/fuzz harnesses) -- is
+      # registered in scheme-tests/test-suites.scm.  We list it by running the
+      # ACTIVE interpreter's `]suites list` (no bash) and run the checked suites
+      # with one `]suites <names>` command.  Adding a suite to the registry makes
+      # it appear here automatically -- Cherry never hardcodes the list.
       if self._busy:
          return
-      parent = self.winfo_toplevel()
-      dlg = tk.Toplevel(parent)
-      dlg.title('Run test suites')
-      dlg.resizable(False, False)
-      dlg.configure(bg='#2d2d2d')
-      dlg.transient(parent)
+      suites = self._load_suite_catalog()
+      if suites is None:
+         return                          # an error dialog was already shown
+      if not suites:
+         messagebox.showinfo('Test suites',
+                             'No suites found in the registry (test-suites.scm).')
+         return
 
-      tk.Label(dlg, text='Run these suites in order:',
-               bg='#2d2d2d', fg='#d4d4d4', padx=24,
-               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(16, 8))
-
-      defaults = {'Feature': True, 'Compliance (quick)': True,
-                  'Compliance (slow)': False, 'Regressions': True}
-      # Restore the last-saved checkbox configuration (saved on Run); fall back
-      # to defaults for any suite not present in the saved selection.
       saved = {}
       if self._get_suite_selection:
          try:
@@ -688,51 +557,58 @@ class ReplPane(tk.Frame):
             saved = {}
       if not isinstance(saved, dict):
          saved = {}
-      # 'Compliance (slow)' only makes sense for cppscheme2; disable it
-      # (forced unchecked) for the other interpreters.
-      slow_ok = self._slow_compliance_applicable()
+
+      parent = self.winfo_toplevel()
+      dlg = tk.Toplevel(parent)
+      dlg.title('Run test suites')
+      dlg.resizable(False, False)
+      dlg.configure(bg='#2d2d2d')
+      dlg.transient(parent)
+
+      tk.Label(dlg, text='Run these suites:',
+               bg='#2d2d2d', fg='#d4d4d4', padx=24,
+               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(16, 8))
+
+      order = [name for (name, _row) in suites]
       checks = {}
       box = tk.Frame(dlg, bg='#2d2d2d')
       box.pack(fill=tk.X, padx=28)
-      for name in ReplPane._SUITE_ORDER:
-         enabled = not (name == 'Compliance (slow)' and not slow_ok)
-         init = bool(saved.get(name, defaults[name])) if enabled else False
-         v = tk.BooleanVar(value=init)
+      for (name, row) in suites:
+         v = tk.BooleanVar(value=bool(saved.get(name, True)))
          checks[name] = v
-         tk.Checkbutton(box, text=name, variable=v,
+         tk.Checkbutton(box, text=row[:64], variable=v,
                         bg='#2d2d2d', fg='#d4d4d4',
                         activebackground='#2d2d2d', activeforeground='#ffffff',
                         selectcolor='#1e1e1e', highlightthickness=0,
-                        disabledforeground='#666666',
-                        state=(tk.NORMAL if enabled else tk.DISABLED),
-                        anchor=tk.W, padx=4, cursor='hand2').pack(fill=tk.X, anchor=tk.W)
+                        anchor=tk.W, padx=4, cursor='hand2',
+                        font=self._font).pack(fill=tk.X, anchor=tk.W)
+
+      slow_var = tk.BooleanVar(value=False)
+      tk.Checkbutton(dlg, text='Run slow variants where available (-slow)',
+                     variable=slow_var, bg='#2d2d2d', fg='#d4d4d4',
+                     activebackground='#2d2d2d', activeforeground='#ffffff',
+                     selectcolor='#1e1e1e', highlightthickness=0,
+                     anchor=tk.W, padx=24, cursor='hand2').pack(fill=tk.X, pady=(8, 0))
 
       tk.Label(dlg,
-               text="'Compliance (quick)' runs -I:100k.  'Compliance (slow)'\n"
-                    "calibrates this machine's TCO overflow threshold then soaks\n"
-                    'above it -- a GC stress run, for cppscheme2 only.',
+               text='Runs via ]suites on the active interpreter.  Known-open bugs\n'
+                    'report as XFAIL (expected) and do not fail the run.  -slow runs\n'
+                    "each suite's slow variant where it has one (e.g. compliance's\n"
+                    'cppScheme2 GC soak), the base run otherwise.',
                bg='#2d2d2d', fg='#888888', padx=24,
-               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(8, 6))
+               anchor=tk.W, justify=tk.LEFT).pack(fill=tk.X, pady=(6, 6))
 
       btn_row = tk.Frame(dlg, bg='#2d2d2d')
       btn_row.pack(pady=(4, 14))
 
       def _do_run():
-         selected = [n for n in ReplPane._SUITE_ORDER if checks[n].get()]
-         # Persist on Run only (Cancel has no effect).  When 'Compliance (slow)'
-         # is disabled (non-cppscheme2), keep its previously-saved value rather
-         # than clobbering it, so a cppscheme2 preference survives a detour.
+         selected = [n for n in order if checks[n].get()]
          if self._save_suite_selection:
-            config = {}
-            for n in ReplPane._SUITE_ORDER:
-               if n == 'Compliance (slow)' and not slow_ok:
-                  config[n] = bool(saved.get(n, defaults[n]))
-               else:
-                  config[n] = bool(checks[n].get())
-            self._save_suite_selection(config)
+            self._save_suite_selection({n: bool(checks[n].get()) for n in order})
          dlg.destroy()
          if selected:
-            self._run_selected_suites(selected)
+            suffix = '-slow' if slow_var.get() else ''
+            self.inject_source(']suites ' + ' '.join(n + suffix for n in selected))
 
       tk.Button(btn_row, text='Run', command=_do_run,
                 bg='#1f4e6b', fg='#d4d4d4',
@@ -753,29 +629,68 @@ class ReplPane(tk.Frame):
       dlg.geometry('+' + str(x) + '+' + str(y))
       dlg.grab_set()
 
-   # ---- run the checked suites via the interpreter's ]suites command -----
-   # The interpreter owns the sequencing now -- and, for compliance-slow, the
-   # heap-OOM/TCO calibration that used to live here (it spawns child
-   # interpreters internally).  So the whole selection runs as ONE ]suites
-   # command; Cherry just maps the checked boxes to suite tokens.
+   # ---- registry catalog via the interpreter's ]suites list (no bash) ----
 
-   _SUITE_TOKEN = {
-      'Feature':            'feature',
-      'Compliance (quick)': 'compliance-quick',
-      'Compliance (slow)':  'compliance-slow',
-      'Regressions':        'regression',
-   }
+   def _load_suite_catalog(self):
+      """Return [(name, display_row), ...] by running `]suites list` on the
+      active interpreter, or None on error (a dialog is shown).  The interpreter
+      -- not bash -- is the single source of the catalog."""
+      cmd = []
+      if self._get_interp_cmd:
+         try:
+            cmd = list(self._get_interp_cmd() or [])
+         except Exception:
+            cmd = []
+      if not cmd:
+         messagebox.showinfo('Test suites', 'No active interpreter to list suites.')
+         return None
+      tdir = ''
+      if self._get_scheme_tests_dir:
+         try:
+            tdir = (self._get_scheme_tests_dir() or '').strip()
+         except Exception:
+            tdir = ''
+      if not tdir:
+         messagebox.showinfo(
+            'Test suites',
+            'Set the Scheme-tests directory first (Settings) so Cherry can list '
+            'the suites.')
+         return None
+      try:
+         res = subprocess.run(cmd + ['-T', tdir],
+                              input=']suites list\n]quit\n',
+                              capture_output=True, text=True, timeout=30)
+      except FileNotFoundError:
+         messagebox.showerror('Test suites',
+                              'Could not launch the interpreter to list suites.')
+         return None
+      except Exception as e:
+         messagebox.showerror('Test suites', 'Could not list suites:\n' + str(e))
+         return None
+      return self._parse_suite_list(res.stdout)
 
-   def _run_selected_suites(self, selected):
-      tokens = [ReplPane._SUITE_TOKEN[n] for n in selected
-                if n in ReplPane._SUITE_TOKEN]
-      # ]suites treats compliance-quick / compliance-slow as mutually exclusive;
-      # if both boxes were somehow checked, run the stronger (slow) and drop
-      # quick rather than tripping the interpreter's error.
-      if 'compliance-slow' in tokens and 'compliance-quick' in tokens:
-         tokens.remove('compliance-quick')
-      if tokens:
-         self.inject_source(']suites ' + ' '.join(tokens))
+   @staticmethod
+   def _parse_suite_list(out):
+      """Parse `]suites list` output into [(name, display_row), ...].  Rows sit
+      between the 'NAME ... ALIASES' header and the next blank line; the name is
+      the row's first token (robust to column widths / a `>>> ` prompt prefix)."""
+      lines = out.splitlines()
+      hdr = None
+      for i, ln in enumerate(lines):
+         if 'NAME' in ln and 'ALIASES' in ln:
+            hdr = i
+            break
+      if hdr is None:
+         return []
+      suites = []
+      for ln in lines[hdr + 1:]:
+         s = ln[4:] if ln.startswith('>>> ') else ln
+         if s.strip() == '':
+            break
+         toks = s.split()
+         if toks:
+            suites.append((toks[0], s.strip()))
+      return suites
 
    # ---- key handlers -----------------------------------------------------
 
