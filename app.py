@@ -15,7 +15,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, font as tkfont
 
-_CHERRY_VERSION = '0.3.0'
+_CHERRY_VERSION = '0.3.1'
 _TITLE_PREFIX   = 'Cherry v' + _CHERRY_VERSION + ' - '
 
 _CHERRY_DIR = pathlib.Path.home() / '.cherry'
