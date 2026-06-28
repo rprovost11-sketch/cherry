@@ -269,7 +269,11 @@ class CherryApp(tk.Tk):
 
       tk.Frame(hdr, width=1, bg='#555555').pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=4)
 
-      self._cwd_var = tk.StringVar(value=os.getcwd())
+      # Reflect the active interpreter's configured cwd (where the bridge spawns
+      # it), not Cherry's launch dir -- otherwise the label is stale until the
+      # first interpreter switch.
+      self._cwd_var = tk.StringVar(
+         value=(self._current_cfg().get('cwd') or os.getcwd()))
       tk.Button(
          hdr,
          text='CWD...',
@@ -324,6 +328,7 @@ class CherryApp(tk.Tk):
                               get_suite_selection=lambda: self._settings.get('suite_selection', {}),
                               save_suite_selection=self._save_suite_selection,
                               get_scheme_tests_dir=lambda: self._settings.get('scheme_tests_dir', ''),
+                              get_interp_cwd=lambda: self._current_cfg().get('cwd', ''),
                               font_family=self._repl_font_cfg['family'],
                               font_size=self._repl_font_cfg['size'],
                               bg='#1e1e1e')

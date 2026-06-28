@@ -107,12 +107,13 @@ def _parse_ansi(text, base_tag):
 class ReplPane(tk.Frame):
    def __init__(self, parent, bridge, get_cwd=None, get_interp_cmd=None,
                 get_suite_selection=None, save_suite_selection=None,
-                get_scheme_tests_dir=None,
+                get_scheme_tests_dir=None, get_interp_cwd=None,
                 font_family='Courier New', font_size=10, **kwargs):
       super().__init__(parent, **kwargs)
       self._bridge             = bridge
       self._get_cwd            = get_cwd or os.getcwd
       self._get_interp_cmd     = get_interp_cmd      # () -> current interpreter cmd list
+      self._get_interp_cwd     = get_interp_cwd      # () -> active interpreter's configured cwd
       self._get_suite_selection  = get_suite_selection   # () -> {name: bool}
       self._save_suite_selection = save_suite_selection  # (dict) -> persist
       self._get_scheme_tests_dir = get_scheme_tests_dir  # () -> scheme-tests root
@@ -631,10 +632,31 @@ class ReplPane(tk.Frame):
             'Set the Scheme-tests directory first (Settings) so Cherry can list '
             'the suites.')
          return None
+      # Run in the interpreter's configured working directory, exactly as the
+      # live bridge does (subprocess_bridge passes cfg['cwd'] to Popen).  Without
+      # it, a cwd-relative command like `python -u -m pyscheme` fails to import
+      # here: the error goes to stderr, stdout is empty, and the catalog parses
+      # as zero suites ("No suites found in the registry").
+      #
+      # Prefer the interpreter's *configured* cwd over the UI cwd var: at startup
+      # the var holds Cherry's launch directory (e.g. lisp/), not the active
+      # interpreter's cwd, so it would send us to the wrong place.
+      run_cwd = None
+      for getter in (self._get_interp_cwd, self._get_cwd):
+         if not getter:
+            continue
+         try:
+            c = (getter() or '').strip()
+         except Exception:
+            continue
+         if c and os.path.isdir(c):
+            run_cwd = c
+            break
       try:
          res = subprocess.run(cmd + ['-T', tdir],
                               input=']suites list\n]quit\n',
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, text=True, timeout=30,
+                              cwd=run_cwd)
       except FileNotFoundError:
          messagebox.showerror('Test suites',
                               'Could not launch the interpreter to list suites.')
