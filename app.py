@@ -15,7 +15,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, font as tkfont
 
-_CHERRY_VERSION = '0.3.1'
+_CHERRY_VERSION = '0.3.2'
 _TITLE_PREFIX   = 'Cherry v' + _CHERRY_VERSION + ' - '
 
 _CHERRY_DIR = pathlib.Path.home() / '.cherry'
@@ -173,11 +173,16 @@ class CherryApp(tk.Tk):
       self._interpreters = interps
 
       # Global scheme-tests directory (applied via ]scheme-tests; see
-      # _init_commands).  Seed it once to the repo's conventional location if
-      # that exists -- a user-editable default, like the seeded interpreters,
-      # not a baked-in constant.  Absent stays absent so tests prompt for setup.
-      if 'scheme_tests_dir' not in self._settings:
-         seed_tests = _LISP_DIR / 'scheme-tests'
+      # _init_commands).  Seed it to the repo's conventional location if that
+      # exists -- a user-editable default, like the seeded interpreters, not a
+      # baked-in constant.  Also re-seed when a stored path has gone missing
+      # (e.g. the scheme-tests repo was relocated): a stale dir would otherwise
+      # be pushed via ]scheme-tests and override the interpreter's own
+      # resolution, hiding the registry.  An explicit empty value (let the
+      # interpreter auto-resolve) is left untouched.
+      stored = self._settings.get('scheme_tests_dir')
+      if stored is None or (stored and not pathlib.Path(stored).is_dir()):
+         seed_tests = _LISP_DIR / 'pyscheme-cppscheme2-common' / 'scheme-tests'
          self._settings['scheme_tests_dir'] = str(seed_tests) if seed_tests.is_dir() else ''
          _save_settings(self._settings)
 
